@@ -1,0 +1,7 @@
+# From: http://shanesbrain.net/2008/7/9/using-xcode-with-git
+build
+*.pbxuser
+*.perspectivev3
+*.mode1v3
+.DS_Store
+profile
