@@ -178,23 +178,29 @@ static inline void insert_edge(edge_t **list, epoint_t pnt) {
 }
 
 static void arrive_edge(edge_t *edge, uint64_t count) {
-	for(int i = 0; i < EDGE_CHUNK_SIZE; i++) {
-		epoint_t pnt = edge->to_points[i];
-		if(pnt == NULL_EPOINT) return;
-		arrive(point_of_epoint(pnt), count);
+	if(edge) {
+		for(int i = 0; i < EDGE_CHUNK_SIZE; i++) {
+			epoint_t epnt = edge->to_points[i];
+			if(epnt == NULL_EPOINT)
+				break;
+			arrive(point_of_epoint(epnt), count);
+		}
+		
+		arrive_edge(edge->next, count);
 	}
-	
-	arrive_edge(edge->next, count);
 }
 
 static void free_edges(edge_t *edge) {
 	if(edge) {
-		free_edges(edge->next);
 		for(int i = 0; i < EDGE_CHUNK_SIZE; i++) {
 			epoint_t epnt = edge->to_points[i];
+			if(epnt == NULL_EPOINT)
+				break;
 			point_release(point_of_epoint(epnt));
 		}
+		
 		free(edge);
+		free_edges(edge->next);		
 	}
 }
 
@@ -232,8 +238,8 @@ static bool is_unscheduled(current_interval_info_t *info, point_t *tar) {
 	{
 		for(int i = 0; i < EDGE_CHUNK_SIZE; i++) {
 			epoint_t epnt = edge->to_points[i];
-			if(epnt == NULL_EPOINT) 
-				return false;
+			if(epnt == NULL_EPOINT)
+				break;
 			
 			point_t *pnt = point_of_epoint(epnt);
 			if(pnt == tar || pnt->bound == tar)
@@ -272,6 +278,8 @@ static inline void point_unlock(point_t *point) {
 
 #pragma mark Tracking Wait Counts
 
+static void interval_schedule_unchecked(current_interval_info_t *info);
+
 // Stub which executes the interval's task and then frees the interval.
 static void execute_interval(void *ctx) {
 	point_t *start = (point_t*)ctx;
@@ -280,7 +288,9 @@ static void execute_interval(void *ctx) {
 	current_interval_info_t info;
 	push_current_interval_info(&info, start, start->bound);
 	
-	start->task(inter);
+	start->task(inter);	
+	interval_schedule_unchecked(&info);
+	
 	arrive(start->bound, ONE_WAIT_COUNT);
 	point_release(start);
 	
@@ -460,15 +470,21 @@ interval_err_t interval_lock(interval_t interval, guard_t *guard) {
 	return INTERVAL_OK;
 }
 
+static void interval_schedule_unchecked(current_interval_info_t *info)
+{
+	if(info->unscheduled_starts) {
+		arrive_edge(info->unscheduled_starts, ONE_WAIT_COUNT);
+		free_edges(info->unscheduled_starts);
+		info->unscheduled_starts = NULL;	
+	}	
+}
+
 interval_err_t interval_schedule() {
 	current_interval_info_t *info = current_interval_info();
 	if(info == NULL)
 		return INTERVAL_NO_ROOT;
 
-	arrive_edge(info->unscheduled_starts, ONE_WAIT_COUNT);
-	free_edges(info->unscheduled_starts);
-	info->unscheduled_starts = NULL;
-	
+	interval_schedule_unchecked(info);
 	return INTERVAL_OK;
 }
 
@@ -566,7 +582,7 @@ static bool enqueue_neighbors(point_walk_t *walk, point_t *p, point_t *target) {
 		for(int i = 0; i < EDGE_CHUNK_SIZE; i++) {
 			epoint_t epnt = edge->to_points[i];
 			if(epnt == NULL_EPOINT)
-				return false;
+				break;
 			
 			point_t *pnt = point_of_epoint(epnt);			
 			if(pnt == target)
