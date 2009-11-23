@@ -7,6 +7,25 @@
  *  Please see the file LICENSE for distribution and licensing details.
  */
 
+/*
+ Some Notes on the Design:
+ 
+ (1) Memory management.  Each point has both a ref and a wait count. 
+ The point is freed when its ref count reaches zero.  The point
+ "occurs" when its wait count reaches zero.  Because the point cannot
+ be freed until it has occurred, the ref count should always be
+ >= the wait count.  Generally, anyone for whom the point is waiting
+ should hold a reference to the point.  In addition, there is always
+ one ref count for the "scheduler": this reference is released when
+ the point "occurs" and its task is executed.
+ 
+ (2) The above scheme implies that creating a new edge from one point
+ to another always requires that the ref count of the target point
+ be incremented.  The wait count need only be incremented if the source
+ point has not yet occurred.
+ 
+ */
+
 #include "interval.h"
 #include <stdlib.h>
 #include <stdarg.h>
@@ -152,8 +171,9 @@ static interval_task_t task(void *ptr, int tag) {
 	return task;
 }
 
-// Dispatches the task for 'pnt'.  Releases the ref count on 'pnt'
-// that is due to the task once the task fully completes.
+// Dispatches the task for 'pnt' once 'pnt' arrives.  
+// Responsible for releasing the scheduler's reference on 'pnt'
+// once the task fully completes.
 static void task_dispatch(point_t *pnt, interval_task_t task) {
 	if(task != EMPTY_TASK) {
 		int tag = (task & TASK_TAG);
@@ -164,7 +184,8 @@ static void task_dispatch(point_t *pnt, interval_task_t task) {
 			dispatch_semaphore_signal(signal);
 			point_release(pnt);
 		} else if(tag == TASK_BLOCK_TAG || tag == TASK_COPIED_BLOCK_TAG) {
-			// execute_interval will release the ref.
+			// execute_interval will invoke task_execute (below) which 
+			// will release the ref.
 			dispatch_async_f(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), pnt, execute_interval);		
 		}		
 	} else {
@@ -172,20 +193,20 @@ static void task_dispatch(point_t *pnt, interval_task_t task) {
 	}		
 }
 
+// Invoked from execute_interval when a point's task is executed.
+// Note that this method is only called when the interval's task
+// is a block.
 static void task_execute(point_t *pnt, interval_task_t task, point_t *arg) {
-	if(task != EMPTY_TASK) {
-		int tag = (task & TASK_TAG);
-		intptr_t ptr = (task & ~TASK_TAG);
-		
-		if(tag == TASK_BLOCK_TAG) {
-			interval_block_t blk = (interval_block_t)ptr;
-			blk(arg);
-		} else if(tag == TASK_COPIED_BLOCK_TAG) {
-			interval_block_t blk = (interval_block_t)ptr;
-			blk(arg);
-			Block_release(blk);
-		}		
-	}
+	assert(task != EMPTY_TASK);
+	int tag = (task & TASK_TAG);
+	intptr_t ptr = (task & ~TASK_TAG);
+	
+	assert(tag == TASK_BLOCK_TAG || tag == TASK_COPIED_BLOCK_TAG);
+	interval_block_t blk = (interval_block_t)ptr;
+	blk(arg);
+	if(tag == TASK_COPIED_BLOCK_TAG)
+		Block_release(blk);
+	point_release(pnt);
 }
 
 #pragma mark Manipulating Edge Lists
@@ -345,10 +366,10 @@ static void execute_interval(void *ctx) {
 	push_current_interval_info(&info, start, start->bound);
 	
 	task_execute(start, start->task, end);
-	interval_schedule_unchecked(&info);
+	// Note: start may be freed by task_execute!
 	
-	arrive(start->bound, ONE_WAIT_COUNT);
-	point_release(start);	
+	interval_schedule_unchecked(&info);	
+	arrive(end, ONE_WAIT_COUNT);
 	pop_current_interval_info(&info);
 }
 
@@ -429,16 +450,26 @@ interval_t interval(point_t *bound, interval_block_t blk)
 	current_interval_info_t *info = current_interval_info();
 	if(info != NULL) {
 		if(check_can_add_dep(info, bound) == INTERVAL_OK) {
+			point_t *currentStart = info->start;
 			
 			interval_task_t startTask = task(Block_copy(blk), TASK_COPIED_BLOCK_TAG);
+
+			// Refs on the start point: user, task, unscheduled list, and optionally currentStart
+			int startRefs = 3;
+			if(currentStart != NULL)
+				startRefs++;
 			
-			point_add_count(bound, ONE_REF_AND_WAIT_COUNT);          // from end point
-			point_t *end = point(bound, EMPTY_TASK, TO_COUNT(3, 2)); // refs held by: user, start, task.  Waiting on start, task.
-			point_t *start = point(end, startTask, TO_COUNT(2, 1));  // refs held by: user, scheduler.  Waiting on scheduler.
-			if(info->start)
-				interval_add_hb_unchecked(info->start, start, false);
+			point_add_count(bound, ONE_REF_AND_WAIT_COUNT);                  // from end point
+			point_t *end = point(bound, EMPTY_TASK, TO_COUNT(3, 2));         // refs held by: user, start, task.  Waiting on start, task.
+			point_t *start = point(end, startTask, TO_COUNT(startRefs, 1));  // refs held by: (See above).  Waiting to be scheduled.
 			
-			debugf("%p-%p: interval(%p) from %p-%p", start, end, bound, info->start, info->end);
+			if(currentStart) {				
+				point_lock(currentStart);
+				insert_edge(&currentStart->out_edges, epoint(start, false));
+				point_unlock(currentStart);
+			}
+			
+			debugf("%p-%p: interval(%p) from %p-%p", start, end, bound, currentStart, info->end);
 			
 			insert_edge(&info->unscheduled_starts, epoint(start, false));
 			
@@ -748,11 +779,15 @@ void point_release(point_t *point) {
 	if(point) {
 		uint64_t c = atomic_sub(&point->counts, ONE_REF_COUNT);
 		if(REF_COUNT(c) == 0) {
+			assert(WAIT_COUNT(c) == WC_STARTED);
+			debugf("%p: freed", point);
 			free_edges(point->out_edges);
 			point_release(point->bound);
 			// Note: point->task is released by task_execute
 			free(point);
-		}
+		} else {
+			debugf("%p: point_release c=%llx", point, c);
+		}			
 	}
 }
 void guard_release(guard_t *guard) {
