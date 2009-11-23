@@ -24,6 +24,10 @@
  be incremented.  The wait count need only be incremented if the source
  point has not yet occurred.
  
+ (3) Note that intervals are returned to the user with a "temporary" reference
+ held by the scheduler.  If the user wishes to retain a reference after
+ the interval is scheduled, they must use interval_retain.
+ 
  */
 
 #include "interval.h"
@@ -461,13 +465,13 @@ interval_t interval(point_t *bound, interval_block_t blk)
 			
 			interval_task_t startTask = task(Block_copy(blk), TASK_COPIED_BLOCK_TAG);
 
-			// Refs on the start point: user, task, unscheduled list, and optionally currentStart
-			int startRefs = 3;
+			// Refs on the start point: task, unscheduled list, and optionally currentStart
+			int startRefs = 2;
 			if(currentStart != NULL)
 				startRefs++;
 			
 			point_add_count(bound, ONE_REF_AND_WAIT_COUNT);                  // from end point
-			point_t *end = point(bound, EMPTY_TASK, TO_COUNT(3, 2));         // refs held by: user, start, task.  Waiting on start, task.
+			point_t *end = point(bound, EMPTY_TASK, TO_COUNT(2, 2));         // refs held by: start, task.  Waiting on start, task.
 			point_t *start = point(end, startTask, TO_COUNT(startRefs, 1));  // refs held by: (See above).  Waiting to be scheduled.
 			
 			if(currentStart) {				

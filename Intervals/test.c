@@ -41,9 +41,6 @@ void after_test(point_t *currentEnd, void *_) {
 	interval_t zero = interval_f(currentEnd, stamp_task, after_stamps + 0);	
 	interval_t one = interval_f(currentEnd, stamp_task, after_stamps + 1);
 	interval_add_hb(zero.end, one.start);	
-	
-	interval_release(zero);
-	interval_release(one);
 }
 
 void after_check() {
@@ -58,9 +55,6 @@ void after2_test(point_t *parentEnd, void *_) {
 	interval_t zero = interval_f(parentEnd, stamp_task, after2_stamps + 0);
 	interval_t one = interval_f(parentEnd, stamp_task, after2_stamps + 1);
 	interval_add_hb(one.end, zero.start);
-	
-	interval_release(zero);
-	interval_release(one);
 }
 
 void after2_check() {
