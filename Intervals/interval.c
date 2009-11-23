@@ -428,7 +428,7 @@ void root_interval(interval_block_t blk)
 	// Create root end point and configure it to signal when done:
 	dispatch_semaphore_t signal = dispatch_semaphore_create(0);	
 	interval_task_t signalTask = task(signal, TASK_SEMAPHORE_TAG);	
-	point_t *root_end = point(NULL, signalTask, TO_COUNT(1, 1));   // Wait and ref'd by us.
+	point_t *root_end = point(NULL, signalTask, TO_COUNT(1, 1));   // refs held by: task.  Waiting for us.
 	debugf("%p = root_end", root_end);
 	
 	// Start root block executing:
@@ -437,7 +437,6 @@ void root_interval(interval_block_t blk)
 	blk(root_end);	
 	interval_schedule_unchecked(&root_info);
 	arrive(root_end, ONE_WAIT_COUNT);	
-	point_release(root_end);
 	pop_current_interval_info(&root_info);	
 	
 	// Wait until root_end occurs (it may already have done so):
@@ -777,6 +776,7 @@ interval_t interval_retain(interval_t interval) {
 }
 void point_release(point_t *point) {
 	if(point) {
+		assert(REF_COUNT(point->counts) > 0); 
 		uint64_t c = atomic_sub(&point->counts, ONE_REF_COUNT);
 		if(REF_COUNT(c) == 0) {
 			assert(WAIT_COUNT(c) == WC_STARTED);
