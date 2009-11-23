@@ -20,8 +20,8 @@ typedef struct guard_t guard_t;
 typedef struct interval_t {
 	point_t *start, *end;
 } interval_t;
-typedef void (*task_func_t)(interval_t, void*);
-typedef void (^interval_block_t)(interval_t inter);
+typedef void (*task_func_t)(point_t *end, void*);
+typedef void (^interval_block_t)(point_t *end);
 typedef enum interval_err_t {
 	INTERVAL_OK,
 	INTERVAL_EDGE_REQUIRED,
@@ -42,6 +42,8 @@ interval_err_t interval_lock(interval_t interval, guard_t *guard);
 interval_err_t interval_schedule();
 
 #pragma mark Querying Intervals and Points
+point_t *interval_bound(interval_t interval);
+point_t *point_bound(point_t *point);
 bool point_hb(point_t *before, point_t *after);
 bool point_bounded_by(point_t *point, point_t *bound);
 

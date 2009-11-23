@@ -77,18 +77,20 @@ static void debugf(const char *fmt, ...) {
 #define RC_ROOT UINT32_MAX     // ref count on the root nodes
 #define WC_STARTED UINT32_MAX  // 
 #define EDGE_CHUNK_SIZE 3
-#define ONE_REF_COUNT    (1L)
-#define ONE_WAIT_COUNT   (1L << 32)
-#define ONE_REF_AND_WAIT_COUNT (ONE_REF_COUNT | ONE_WAIT_COUNT)
-#define REF_COUNT(v) ((uint32_t)(v))
-#define WAIT_COUNT(v) ((uint32_t)((v) >> 32))
-#define TO_REF_COUNT(n) (((uint64_t)(n)))
-#define TO_WAIT_COUNT(n) (((uint64_t)(n)) << 32)
-#define TO_COUNT(rc, wc) (TO_REF_COUNT(rc) | TO_WAIT_COUNT(wc))
 #define NULL_EPOINT ((epoint_t)0)
+#define REF_COUNT(v) ((uint32_t)((v) >> 32))
+#define WAIT_COUNT(v) ((uint32_t)(v))
+#define TO_REF_COUNT(n) (((uint64_t)(n)) << 32)
+#define TO_WAIT_COUNT(n) (((uint64_t)(n)))
+#define TO_COUNT(rc, wc) (TO_REF_COUNT(rc) | TO_WAIT_COUNT(wc))
+#define ONE_REF_COUNT    TO_REF_COUNT(1)
+#define ONE_WAIT_COUNT   TO_WAIT_COUNT(1)
+#define ONE_REF_AND_WAIT_COUNT (ONE_REF_COUNT | ONE_WAIT_COUNT)
 
 typedef int epoch_t;
 typedef intptr_t epoint_t;
+typedef intptr_t interval_task_t;
+
 typedef struct edge_t {
 	epoint_t to_points[EDGE_CHUNK_SIZE];
 	epoch_t from_epochs[EDGE_CHUNK_SIZE];
@@ -103,7 +105,7 @@ struct guard_t {
 struct point_t {
 	// Immutable fields:
 	point_t *bound;
-	interval_block_t task;
+	interval_task_t task;
 	int depth;
 	
 	// Mutable state:
@@ -129,11 +131,62 @@ struct point_t {
 typedef struct current_interval_info_t current_interval_info_t;
 struct current_interval_info_t {
 	current_interval_info_t *next; // points to the previous current_interval_info
-	point_t *start;
+	point_t *start;                // might be NULL (root interval, for example)
 	point_t *end;
 	edge_t *unscheduled_starts;
 };
 
+#pragma mark Manipulating Interval Tasks
+
+static void execute_interval(void *ctx);
+
+#define EMPTY_TASK            0
+#define TASK_SEMAPHORE_TAG    1
+#define TASK_BLOCK_TAG        2
+#define TASK_COPIED_BLOCK_TAG 3
+#define TASK_TAG              3
+
+static interval_task_t task(void *ptr, int tag) {
+	intptr_t task = (intptr_t)ptr;
+	task |= tag;
+	return task;
+}
+
+// Dispatches the task for 'pnt'.  Releases the ref count on 'pnt'
+// that is due to the task once the task fully completes.
+static void task_dispatch(point_t *pnt, interval_task_t task) {
+	if(task != EMPTY_TASK) {
+		int tag = (task & TASK_TAG);
+		intptr_t ptr = (task & ~TASK_TAG);
+		
+		if(tag == TASK_SEMAPHORE_TAG) {
+			dispatch_semaphore_t signal = (dispatch_semaphore_t)ptr;
+			dispatch_semaphore_signal(signal);
+			point_release(pnt);
+		} else if(tag == TASK_BLOCK_TAG || tag == TASK_COPIED_BLOCK_TAG) {
+			// execute_interval will release the ref.
+			dispatch_async_f(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), pnt, execute_interval);		
+		}		
+	} else {
+		point_release(pnt);
+	}		
+}
+
+static void task_execute(point_t *pnt, interval_task_t task, point_t *arg) {
+	if(task != EMPTY_TASK) {
+		int tag = (task & TASK_TAG);
+		intptr_t ptr = (task & ~TASK_TAG);
+		
+		if(tag == TASK_BLOCK_TAG) {
+			interval_block_t blk = (interval_block_t)ptr;
+			blk(arg);
+		} else if(tag == TASK_COPIED_BLOCK_TAG) {
+			interval_block_t blk = (interval_block_t)ptr;
+			blk(arg);
+			Block_release(blk);
+		}		
+	}
+}
 
 #pragma mark Manipulating Edge Lists
 
@@ -226,6 +279,7 @@ static void push_current_interval_info(current_interval_info_t *info, point_t *s
 	info->start = start;
 	info->end = end;
 	info->next = current_interval_info();
+	info->unscheduled_starts = NULL;
 	pthread_setspecific(current_interval_key, info);
 }
 
@@ -251,7 +305,7 @@ static bool is_unscheduled(current_interval_info_t *info, point_t *tar) {
 
 #pragma mark Manipulating Points
 
-static point_t *point(point_t *bound, interval_block_t task, uint64_t counts)
+static point_t *point(point_t *bound, interval_task_t task, uint64_t counts)
 {
 	point_t *result = (point_t*)malloc(sizeof(point_t));
 	result->bound = bound;
@@ -261,11 +315,13 @@ static point_t *point(point_t *bound, interval_block_t task, uint64_t counts)
 	result->out_edges = NULL;
 	result->epoch = 0;
 	result->counts = counts;
+	debugf("%p = point(%p, %llx)", result, bound, counts);
 	return result;
 }
 
-static inline void point_add_count(point_t *point, uint64_t amnt) {
-	atomic_add(&point->counts, amnt);
+static inline void point_add_count(point_t *point, uint64_t count) {
+	uint64_t new_count = atomic_add(&point->counts, count);
+	debugf("%p point_add_count(%llx) new_count=%llx", point, count, new_count);
 }
 
 static inline void point_lock(point_t *point) {
@@ -283,17 +339,16 @@ static void interval_schedule_unchecked(current_interval_info_t *info);
 // Stub which executes the interval's task and then frees the interval.
 static void execute_interval(void *ctx) {
 	point_t *start = (point_t*)ctx;
-	interval_t inter = { .start = start, .end = start->bound };
+	point_t *end = start->bound;
 	
 	current_interval_info_t info;
 	push_current_interval_info(&info, start, start->bound);
 	
-	start->task(inter);	
+	task_execute(start, start->task, end);
 	interval_schedule_unchecked(&info);
 	
 	arrive(start->bound, ONE_WAIT_COUNT);
-	point_release(start);
-	
+	point_release(start);	
 	pop_current_interval_info(&info);
 }
 
@@ -305,7 +360,7 @@ static void arrive(point_t *point, uint64_t count) {
 	uint64_t new_count = atomic_sub(&point->counts, count);
 	uint32_t new_wait_count = WAIT_COUNT(new_count);
 	
-	debugf("arrive(%p, %llx) new_count=%llx", point, count, new_count);
+	debugf("%p arrive(%llx) new_count=%llx", point, count, new_count);
 	
 	if(new_wait_count == 0) {
 		edge_t *notify;
@@ -317,15 +372,11 @@ static void arrive(point_t *point, uint64_t count) {
 		notify = point->out_edges;
 		point_unlock(point);
 		
-		// Notify those coming after us
+		// Notify those coming after us and dispatch task (if any)
 		arrive_edge(notify, ONE_WAIT_COUNT);
-		
-		if(point->task)
-			dispatch_async_f(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), point, execute_interval);
-		arrive(point->bound, ONE_WAIT_COUNT);
-		
-		// Release ref. count from scheduler.
-		point_release(point);
+		if(point->bound)
+			arrive(point->bound, ONE_WAIT_COUNT);
+		task_dispatch(point, point->task);
 	}
 }
 
@@ -348,32 +399,49 @@ static interval_err_t check_can_add_dep(current_interval_info_t *info, point_t *
 
 #pragma mark Creating Intervals 
 
-void root_interval(interval_block_t task)
+void root_interval(interval_block_t blk)
 {
 	init_current_interval_key();
 	assert(current_interval_info() == NULL);
 
-	point_t *root_end = point(NULL, NULL, TO_COUNT(RC_ROOT, 1));
-	point_t *root_start = point(root_end, NULL, TO_COUNT(RC_ROOT, WC_STARTED));
+	// Create root end point and configure it to signal when done:
+	dispatch_semaphore_t signal = dispatch_semaphore_create(0);	
+	interval_task_t signalTask = task(signal, TASK_SEMAPHORE_TAG);	
+	point_t *root_end = point(NULL, signalTask, TO_COUNT(1, 1));   // Wait and ref'd by us.
+	debugf("%p = root_end", root_end);
 	
+	// Start root block executing:
 	current_interval_info_t root_info;	
-	push_current_interval_info(&root_info, root_start, root_end);
-
-	interval_t root = { .start = root_start, .end = root_end };
-	task(root);
+	push_current_interval_info(&root_info, NULL, root_end);
+	blk(root_end);	
+	interval_schedule_unchecked(&root_info);
+	arrive(root_end, ONE_WAIT_COUNT);	
+	point_release(root_end);
+	pop_current_interval_info(&root_info);	
 	
-	pop_current_interval_info(&root_info);
+	// Wait until root_end occurs (it may already have done so):
+	dispatch_semaphore_wait(signal, DISPATCH_TIME_FOREVER);
+	dispatch_release(signal);	
 }
 
-interval_t interval(point_t *bound, interval_block_t task)
+interval_t interval(point_t *bound, interval_block_t blk)
 {
 	current_interval_info_t *info = current_interval_info();
 	if(info != NULL) {
-		if(check_can_add_dep(info, bound) == INTERVAL_OK) {	
-			task = Block_copy(task);
-			point_add_count(bound, ONE_REF_AND_WAIT_COUNT);    // from end point
-			point_t *end = point(bound, NULL, TO_COUNT(2, 2)); // refs held by: user, start.  Waiting on start, task.
-			point_t *start = point(end, task, TO_COUNT(2, 1)); // refs held by: user, scheduler.  Waiting on scheduler.
+		if(check_can_add_dep(info, bound) == INTERVAL_OK) {
+			
+			interval_task_t startTask = task(Block_copy(blk), TASK_COPIED_BLOCK_TAG);
+			
+			point_add_count(bound, ONE_REF_AND_WAIT_COUNT);          // from end point
+			point_t *end = point(bound, EMPTY_TASK, TO_COUNT(3, 2)); // refs held by: user, start, task.  Waiting on start, task.
+			point_t *start = point(end, startTask, TO_COUNT(2, 1));  // refs held by: user, scheduler.  Waiting on scheduler.
+			if(info->start)
+				interval_add_hb_unchecked(info->start, start, false);
+			
+			debugf("%p-%p: interval(%p) from %p-%p", start, end, bound, info->start, info->end);
+			
+			insert_edge(&info->unscheduled_starts, epoint(start, false));
+			
 			return (interval_t) { .start = start, .end = end };
 		}
 	}
@@ -382,29 +450,34 @@ interval_t interval(point_t *bound, interval_block_t task)
 
 interval_t interval_f(point_t *bound, task_func_t task, void *userdata)
 {
-	return interval(bound, ^(interval_t inter) {
-		task(inter, userdata);
+	return interval(bound, ^(point_t *end) {
+		task(end, userdata);
 	});
 }
 
-interval_err_t subinterval(interval_block_t task)
+interval_err_t subinterval(interval_block_t blk)
 {
 	current_interval_info_t *info = current_interval_info();
 	if(info == NULL)
 		return INTERVAL_NO_ROOT;
 	
-	point_add_count(info->end, ONE_REF_AND_WAIT_COUNT);    // from end point
-	point_t *end = point(info->end, NULL, TO_COUNT(1, 2)); // refs held by: start.  Waiting on start, task.
-	point_t *start = point(end, task, TO_COUNT(1, 1));     // refs held by: scheduler.  Waiting on scheduler.
-	interval_add_hb_unchecked(info->start, start, false);
-	
-	// Create a "notify" point which, once 'end' has occurred, will
-	// signal the semaphore 'signal'.
+	// Create tasks:
+	//    start will run blk (no need to copy, we're still on the stack)
+	//    end will signal 'signal' when its occurred
 	dispatch_semaphore_t signal = dispatch_semaphore_create(0);	
-	point_t *notify = point(info->end, ^(interval_t inter) {
-		dispatch_semaphore_signal(signal);
-	}, TO_COUNT(1, 1));	// 1 ref from end and 1 wait from end.  Note: no ref from us!
-	insert_edge(&end->out_edges, epoint(notify, false));
+	interval_task_t signalTask = task(signal, TASK_SEMAPHORE_TAG);
+	interval_task_t blkTask = task(blk, TASK_BLOCK_TAG);
+	
+	// Create points:
+	//    Note that start occurs immediately.  Used in dyn. race det. to adjust bound, 
+	//    but maybe we could get rid of it.
+	point_add_count(info->end, ONE_REF_AND_WAIT_COUNT);            // from end point
+	point_t *end = point(info->end, signalTask, TO_COUNT(2, 1));   // refs held by: start, task.  Waiting on task.
+	point_t *start = point(end, blkTask, TO_COUNT(1, WC_STARTED)); // refs held by: task.
+	if(info->start)
+		interval_add_hb_unchecked(info->start, start, false);
+	
+	debugf("%p-%p: subinterval of %p-%p", start, end, info->start, info->end);
 	
 	// Execute the user's code then wait until 'end' has occurred
 	// (and, hence, executed notify).
@@ -416,8 +489,8 @@ interval_err_t subinterval(interval_block_t task)
 
 interval_err_t subinterval_f(task_func_t task, void *userdata)
 {
-	return subinterval(^(interval_t inter) {
-		task(inter, userdata);
+	return subinterval(^(point_t *end) {
+		task(end, userdata);
 	});
 }
 
@@ -431,7 +504,9 @@ static void interval_add_hb_unchecked(point_t *before, point_t *after, bool synt
 	// that either before or after is unscheduled, this is less
 	// efficient than it needs to be!  
 	
-	atomic_add(&after->counts, ONE_REF_AND_WAIT_COUNT);
+	debugf("%p->%p", before, after);	
+	
+	point_add_count(after, ONE_REF_AND_WAIT_COUNT);
 	
 	point_lock(before);
 	insert_edge(&before->out_edges, epoint(after, synthetic));
@@ -439,7 +514,7 @@ static void interval_add_hb_unchecked(point_t *before, point_t *after, bool synt
 	point_unlock(before);
 
 	if(WAIT_COUNT(before_counts) == WC_STARTED)
-		arrive(after, ONE_WAIT_COUNT);
+		arrive(after, ONE_WAIT_COUNT);	
 }
 
 interval_err_t interval_add_hb(point_t *before, point_t *after) {
@@ -517,7 +592,7 @@ static void point_walk_init(point_walk_t *pnt_walk) {
 	const unsigned bytes = size * sizeof(point_walk_entry_t*);
 	pnt_walk->hash = (point_walk_entry_t**) malloc(bytes);
 	pnt_walk->hash_cnt = size;
-	pnt_walk->hash_mask = ~(size+1);
+	pnt_walk->hash_mask = size - 1;
 	
 	memset(pnt_walk->hash, 0, bytes);
 	pnt_walk->queue_first = pnt_walk->queue_last = NULL;
@@ -621,6 +696,18 @@ static bool point_hb_internal(point_t *before, point_t *after, bool only_determi
 
 #pragma mark Querying Intervals and Points
 
+point_t *interval_bound(interval_t interval) {
+	if(interval.end)
+		return interval.end->bound;
+	return NULL;
+}
+
+point_t *point_bound(point_t *point) {
+	if(point)
+		return point->bound;
+	return NULL;
+}
+
 bool point_hb(point_t *before, point_t *after) {
 	return point_hb_internal(before, after, true);
 }
@@ -663,8 +750,7 @@ void point_release(point_t *point) {
 		if(REF_COUNT(c) == 0) {
 			free_edges(point->out_edges);
 			point_release(point->bound);
-			if(point->task)
-				Block_release(point->task);
+			// Note: point->task is released by task_execute
 			free(point);
 		}
 	}

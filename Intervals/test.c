@@ -23,25 +23,24 @@ int stamp() {
 	return __sync_fetch_and_add(&value, 1);
 }
 
-void stamp_task(interval_t *parent, void *result) {
+void stamp_task(point_t *_, void *result) {
 	*(int*)result = stamp();
 }
 
 #pragma mark basic_test()
 
-void basic_test(interval_t *parent, void *_) {
+void basic_test(point_t *end, void *_) {
 }
 
 #pragma mark after_test()
 
 static int after_stamps[2];
 
-void after_test(interval_t *parent, void *_) {
-	after_stamps[0] = after_stamps[1] = INT_MAX;
-	interval_t *zero = create_async_interval(parent, stamp_task, after_stamps + 0, INTERVAL_NO_DEPS);
-	create_async_interval(parent, stamp_task, after_stamps + 1, INTERVAL_DEPS(
-		DEP_START_AFTER_END_OF(zero)
-	));
+void after_test(point_t *currentEnd, void *_) {
+	after_stamps[0] = after_stamps[1] = INT_MAX;	
+	interval_t zero = interval_f(currentEnd, stamp_task, after_stamps + 0);	
+	interval_t one = interval_f(currentEnd, stamp_task, after_stamps + 1);
+	interval_add_hb(zero.end, one.start);	
 }
 
 void after_check() {
@@ -52,31 +51,26 @@ void after_check() {
 
 static int after2_stamps[2];
 
-void after_2_test_task(interval_t *after, void *_parent) {
-	interval_t *parent = _parent;
-	
-	interval_t *one = create_async_interval(parent, stamp_task, after_stamps + 1, INTERVAL_DEPS(
-		DEP_START_AFTER_END_OF(after)
-	));
-									  
-	create_async_interval(parent, stamp_task, after_stamps + 0, INTERVAL_DEPS(
-		DEP_END_BEFORE_START_OF(one)
-	));
-}
-
-void after2_test(interval_t *parent, void *_) {
-	create_async_interval(parent, after_2_test_task, parent, INTERVAL_NO_DEPS);
+void after2_test(point_t *parentEnd, void *_) {
+	interval_t zero = interval_f(parentEnd, stamp_task, after2_stamps + 0);
+	interval_t one = interval_f(parentEnd, stamp_task, after2_stamps + 1);
+	interval_add_hb(one.end, zero.start);
 }
 
 void after2_check() {
-	ASSERT(after2_stamps[1] == after2_stamps[0] + 1);
+	ASSERT(after2_stamps[0] == after2_stamps[1] + 1);
 }
 
 #pragma mark main()
 
 int main() {
-	sync_interval(basic_test, NULL, INTERVAL_NO_DEPS);
-	
-	sync_interval(after_test, NULL, INTERVAL_NO_DEPS);
-	after_check();
+	root_interval(^(point_t *rootEnd) {
+		subinterval_f(basic_test, NULL);
+		
+		subinterval_f(after_test, NULL);
+		after_check();
+		
+		subinterval_f(after2_test, NULL);
+		after2_check();
+	});	
 }
