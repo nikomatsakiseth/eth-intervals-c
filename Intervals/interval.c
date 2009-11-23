@@ -538,32 +538,51 @@ interval_err_t subinterval_f(task_func_t task, void *userdata)
 
 #pragma mark Scheduling Intervals
 static void interval_add_hb_unchecked(point_t *before, point_t *after, bool synthetic) {
-	uint64_t before_counts;
-
-	// XXX
-	//
-	// This is completely correct, but annoying.  In the common case
-	// that either before or after is unscheduled, this is less
-	// efficient than it needs to be!  
-	
 	debugf("%p->%p", before, after);	
 	
-	point_add_count(after, ONE_REF_AND_WAIT_COUNT);
-	
 	point_lock(before);
+	
+	// Note: we have to adjust 'after->counts' while holding 
+	// before lock to ensure that 'before' doesn't occur
+	// after we have added the edge but before we have
+	// incremented 'after->counts' (that could cause 'after' to
+	// occur when it shouldn't).  This means we hold the
+	// lock a little longer than we otherwise might which
+	// doesn't please me.  Alternatives:
+	//
+	// (0) Restrict API to require that either 'before' or 'after'
+	//     is unscheduled (AND make changes in (3)).
+	//
+	// (1) Always pre-increment by ONE_REF_AND_WAIT_COUNT
+	//     but later do a 'fix-up' if before already occurred.
+	//
+	// (2) If 'before' is unscheduled, we know it cannot
+	//     yet have occurred.  Unfortunately, we don't know
+	//     (and wouldn't normally need to know) whether 'before'
+	//     is unscheduled or not.
+	//
+	// (3) If 'after' is unscheduled (common case), we could 
+	//     (a) Initialize unscheduled intervals wait count to INT_MAX/2
+	//     (b) Track desired wait count for unscheduled intervals in some side array
+	//     (c) When we schedule them, adjust appropriately
+	//     Since we already have to check whether 'after' is an unscheduled
+	//     interval, it wouldn't add overhead to check though it would
+	//     require some code restructuring.
+	if(WAIT_COUNT(before->counts) == WC_STARTED)
+		point_add_count(after, ONE_REF_COUNT);
+	else
+		point_add_count(after, ONE_REF_AND_WAIT_COUNT);
+	
 	insert_edge(&before->out_edges, epoint(after, synthetic));
-	before_counts = before->counts;
+	
 	point_unlock(before);
-
-	if(WAIT_COUNT(before_counts) == WC_STARTED)
-		arrive(after, ONE_WAIT_COUNT);	
 }
 
 interval_err_t interval_add_hb(point_t *before, point_t *after) {
 	current_interval_info_t *info = current_interval_info();
 	if(info == NULL)
 		return INTERVAL_NO_ROOT;
-	
+
 	interval_err_t err;
 	if((err = check_can_add_dep(info, after)) != INTERVAL_OK)
 		return err;
