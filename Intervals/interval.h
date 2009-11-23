@@ -1,98 +1,59 @@
+/*
+ *  Intervals Library
+ *
+ *  Copyright 2009 Nicholas D. Matsakis.
+ *
+ *  This library is open source and distributed under the GPLv3 license.  
+ *  Please see the file LICENSE for distribution and licensing details.
+ */
+
 #ifndef INTERVAL_H
 #define INTERVAL_H
 
 #include <stdbool.h>
 
+#define INTERVAL_SAFETY_CHECKS_ENABLED
+
+#pragma mark Type Definitions
 typedef struct point_t point_t;
 typedef struct guard_t guard_t;
-typedef void (*task_f)(interval_t*, void*);
-
 typedef struct interval_t {
 	point_t *start, *end;
 } interval_t;
+typedef void (*task_func_t)(interval_t, void*);
+typedef void (^interval_block_t)(interval_t inter);
+typedef enum interval_err_t {
+	INTERVAL_OK,
+	INTERVAL_EDGE_REQUIRED,
+	INTERVAL_CYCLE,
+	INTERVAL_NO_ROOT
+} interval_err_t;
 
-typedef enum dependency_kind_t {
-	_DEP_END,
-	
-	_DEP_LOCK,
-	
-	_DEP_AFTER_MIN,
-	_DEP_START_AFTER,
-	_DEP_END_AFTER,
-	_DEP_AFTER_MAX,
-	
-	_DEP_BEFORE_MIN,
-	_DEP_START_BEFORE,
-	_DEP_END_BEFORE,
-	_DEP_BEFORE_MAX,
-} dependency_kind_t;
+#pragma mark Creating Intervals
+void root_interval(interval_block_t task); // invoked to start interval runtime
+interval_t interval(point_t *bound, interval_block_t task); // NULL bound == bound of current interval
+interval_t interval_f(point_t *bound, task_func_t task, void *userdata);
+interval_err_t subinterval(interval_block_t task);
+interval_err_t subinterval_f(task_func_t task, void *userdata);
 
-typedef enum side_t {
-	SIDE_START, 
-	SIDE_END,
-	SIDE_CNT
-} side_t;
+#pragma mark Scheduling Intervals
+interval_err_t interval_add_hb(point_t *before, point_t *after);
+interval_err_t interval_lock(interval_t interval, guard_t *guard);
+interval_err_t interval_schedule();
 
-typedef struct interval_dependency_t {
-	dependency_kind_t kind;
-	union {
-		point_t *point;
-		guard_t *guard;
-	} item;
-} interval_dependency_t;
+#pragma mark Querying Intervals and Points
+bool point_hb(point_t *before, point_t *after);
+bool point_bounded_by(point_t *point, point_t *bound);
 
-#define INTERVAL_NO_DEPS                 ((interval_dependency_t[]) { { _DEP_END } })
-#define INTERVAL_DEPS(deps...)           ((interval_dependency_t[]) { deps, { _DEP_END } })
-#define INTERVAL_CURRENT                 NULL
+#pragma mark Creating Guards
+guard_t *guard();
 
-#define DEP_START_AFTER(pnt)  ((interval_dependency_t){ .kind=_DEP_START_AFTER,  .item.point=pnt })
-#define DEP_END_AFTER(pnt)    ((interval_dependency_t){ .kind=_DEP_END_AFTER,    .item.point=pnt })
-
-#define DEP_START_BEFORE(pnt) ((interval_dependency_t){ .kind=_DEP_START_BEFORE, .item.point=pnt })
-#define DEP_END_BEFORE(pnt)   ((interval_dependency_t){ .kind=_DEP_END_BEFORE,   .item.point=pnt })
-
-#define DEP_LOCK(g)           ((interval_dependency_t){ .kind=_DEP_LOCK,         .item.guard=g })
-
-// Functions to create and manipulate standard intervals:
-interval_t root_interval();
-interval_t create_unsched_interval(point_t *bound, task_f task, void *userdata, interval_dependency_t dependencies[]); // Use INTERVAL_CURRENT for parent to use current interval
-void sched_interval(point_t *start);
-void sync_interval(task_f task, void *userdata, interval_dependency_t dependencies[]);  // Current interval (or root) is parent
-bool point_bounded_by(interval_t *inter, interval_t *bnd); // Returns true if 'bnd' is a bounding interval of 'inter'
-
+#pragma mark Memory Management
 point_t *point_retain(point_t *point);            // Increase ref count and return 'point'
-void point_release(point_t *point);               // Release ref count on 'point', possibly freeing it
+guard_t *guard_retain(guard_t *guard);            // Increase ref count and return 'guard'
 interval_t interval_retain(interval_t interval);  // Retains both points and returns 'interval'
+void point_release(point_t *point);               // Release ref count on 'point', possibly freeing it
+void guard_release(guard_t *guard);               // Release ref count on 'guard', possibly freeing it
 void interval_release(interval_t interval);       // Releases both points
-
-// Functions to create and manipulate suspended intervals:
-//
-//   A suspended interval is one which does not complete until the
-//   it is released by a call to suspended_interval_release().
-//   In other ways, it acts like a normal interval.
-//
-//   As failing to call suspended_interval_release()
-//   will cause deadlock, using suspended intervals is dangerous.
-//   They are intended to be used for extending the scheduler
-//   to take into account other kinds of asynchronous events.
-//
-//   The idea is that users may create a suspended interval and
-//   integrate it into their scheduling dependencies.  Therefore,
-//   one may specify that other tasks must wait for the suspended
-//   interval before proceeding.
-interval_t *create_suspended_interval();
-void suspended_interval_release(interval_t *interval); // Also decrements ref. count!
-
-// Functions to create and manipulate guards:
-// 
-//   Guards act as locks or queues.  Intervals may inform
-//   the scheduler that they lock a particular guard.  All 
-//   intervals which lock the same guard will be scheduled
-//   in some sequential order.  Intervals may lock multiple
-//   guards.  Be wary of deadlocks when using guards, 
-//   however!  
-guard_t *create_guard();
-guard_t *guard_retain(guard_t *g);  // Always returns g.
-void guard_release(guard_t *g);
 
 #endif
