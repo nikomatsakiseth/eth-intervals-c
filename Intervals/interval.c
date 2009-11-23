@@ -56,6 +56,7 @@
 
 static dispatch_once_t init_debug;
 static dispatch_queue_t debug_queue;
+static uint64_t live_points; // tracks number of live intervals when debugging
 
 static void debugf(const char *fmt, ...) {
 	dispatch_once(&init_debug, ^{
@@ -337,6 +338,11 @@ static point_t *point(point_t *bound, interval_task_t task, uint64_t counts)
 	result->epoch = 0;
 	result->counts = counts;
 	debugf("%p = point(%p, %llx)", result, bound, counts);
+	
+#   ifndef NDEBUG
+	atomic_add(&live_points, 1);
+#   endif
+	
 	return result;
 }
 
@@ -442,6 +448,8 @@ void root_interval(interval_block_t blk)
 	// Wait until root_end occurs (it may already have done so):
 	dispatch_semaphore_wait(signal, DISPATCH_TIME_FOREVER);
 	dispatch_release(signal);	
+	
+	assert(live_points == 0);
 }
 
 interval_t interval(point_t *bound, interval_block_t blk)
@@ -785,6 +793,10 @@ void point_release(point_t *point) {
 			point_release(point->bound);
 			// Note: point->task is released by task_execute
 			free(point);
+			
+#   ifndef NDEBUG
+			atomic_sub(&live_points, 1);
+#   endif
 		} else {
 			debugf("%p: point_release c=%llx", point, c);
 		}			
