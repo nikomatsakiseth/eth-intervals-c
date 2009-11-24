@@ -14,6 +14,10 @@
 		23B7152710BAEC4F00EFB43C /* thread_pool.c in Sources */ = {isa = PBXBuildFile; fileRef = 23B7152510BAEC4F00EFB43C /* thread_pool.c */; };
 		23B7152910BAEE3E00EFB43C /* atomic.h in Headers */ = {isa = PBXBuildFile; fileRef = 23B7152810BAEE3E00EFB43C /* atomic.h */; };
 		23BFCDB910BBCB4E00B0C705 /* internal.h in Headers */ = {isa = PBXBuildFile; fileRef = 23BFCDB810BBCB4E00B0C705 /* internal.h */; };
+		23BFCED410BBF60500B0C705 /* nqueens.c in Sources */ = {isa = PBXBuildFile; fileRef = 23BFCED210BBF60500B0C705 /* nqueens.c */; };
+		23BFCF0710BC07C700B0C705 /* nqueens.c in Sources */ = {isa = PBXBuildFile; fileRef = 23BFCED210BBF60500B0C705 /* nqueens.c */; };
+		23BFCF0E10BC07DD00B0C705 /* libIntervals.dylib in Frameworks */ = {isa = PBXBuildFile; fileRef = D2AAC0630554660B00DB518D /* libIntervals.dylib */; };
+		23BFCF0F10BC07E200B0C705 /* CoreServices.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 2321A36D1067A59500FDB440 /* CoreServices.framework */; };
 		23EBC04C105CCC1B00D73DD2 /* interval.h in Headers */ = {isa = PBXBuildFile; fileRef = 23EBC04A105CCC1B00D73DD2 /* interval.h */; };
 		23EBC04D105CCC1B00D73DD2 /* interval.c in Sources */ = {isa = PBXBuildFile; fileRef = 23EBC04B105CCC1B00D73DD2 /* interval.c */; };
 /* End PBXBuildFile section */
@@ -26,18 +30,26 @@
 			remoteGlobalIDString = D2AAC0620554660B00DB518D;
 			remoteInfo = Intervals;
 		};
+		23BFCF1010BC07F900B0C705 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 08FB7793FE84155DC02AAC07 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = D2AAC0620554660B00DB518D /* Intervals */;
+			remoteInfo = Intervals;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		2321A2A4106793C200FDB440 /* Test-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "Test-Info.plist"; sourceTree = "<group>"; };
 		2321A2B61067949900FDB440 /* IntervalsTest */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = IntervalsTest; sourceTree = BUILT_PRODUCTS_DIR; };
-		2321A2BC106794DA00FDB440 /* test.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = test.h; sourceTree = "<group>"; };
 		2321A2BD106794DA00FDB440 /* test.c */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.c; path = test.c; sourceTree = "<group>"; };
 		2321A36D1067A59500FDB440 /* CoreServices.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreServices.framework; path = System/Library/Frameworks/CoreServices.framework; sourceTree = SDKROOT; };
 		23B7152410BAEC4F00EFB43C /* thread_pool.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = thread_pool.h; sourceTree = "<group>"; };
 		23B7152510BAEC4F00EFB43C /* thread_pool.c */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.c; path = thread_pool.c; sourceTree = "<group>"; };
 		23B7152810BAEE3E00EFB43C /* atomic.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = atomic.h; sourceTree = "<group>"; };
 		23BFCDB810BBCB4E00B0C705 /* internal.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = internal.h; sourceTree = "<group>"; };
+		23BFCED210BBF60500B0C705 /* nqueens.c */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.c; path = nqueens.c; sourceTree = "<group>"; };
+		23BFCF0210BC07B200B0C705 /* nqueens */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = nqueens; sourceTree = BUILT_PRODUCTS_DIR; };
 		23EBC04A105CCC1B00D73DD2 /* interval.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = interval.h; sourceTree = "<group>"; };
 		23EBC04B105CCC1B00D73DD2 /* interval.c */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.c; path = interval.c; sourceTree = "<group>"; };
 		D2AAC0630554660B00DB518D /* libIntervals.dylib */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.dylib"; includeInIndex = 0; path = libIntervals.dylib; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -50,6 +62,15 @@
 			files = (
 				2321A2BB106794BB00FDB440 /* libIntervals.dylib in Frameworks */,
 				2321A36E1067A59500FDB440 /* CoreServices.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		23BFCF0010BC07B200B0C705 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				23BFCF0E10BC07DD00B0C705 /* libIntervals.dylib in Frameworks */,
+				23BFCF0F10BC07E200B0C705 /* CoreServices.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -93,6 +114,7 @@
 			children = (
 				D2AAC0630554660B00DB518D /* libIntervals.dylib */,
 				2321A2B61067949900FDB440 /* IntervalsTest */,
+				23BFCF0210BC07B200B0C705 /* nqueens */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -100,8 +122,8 @@
 		2321A2A91067941700FDB440 /* Tests */ = {
 			isa = PBXGroup;
 			children = (
-				2321A2BC106794DA00FDB440 /* test.h */,
 				2321A2BD106794DA00FDB440 /* test.c */,
+				23BFCED210BBF60500B0C705 /* nqueens.c */,
 			);
 			name = Tests;
 			sourceTree = "<group>";
@@ -140,6 +162,23 @@
 			productReference = 2321A2B61067949900FDB440 /* IntervalsTest */;
 			productType = "com.apple.product-type.tool";
 		};
+		23BFCF0110BC07B200B0C705 /* nqueens */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 23BFCF1410BC080400B0C705 /* Build configuration list for PBXNativeTarget "nqueens" */;
+			buildPhases = (
+				23BFCEFF10BC07B200B0C705 /* Sources */,
+				23BFCF0010BC07B200B0C705 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				23BFCF1110BC07F900B0C705 /* PBXTargetDependency */,
+			);
+			name = nqueens;
+			productName = nqueens;
+			productReference = 23BFCF0210BC07B200B0C705 /* nqueens */;
+			productType = "com.apple.product-type.tool";
+		};
 		D2AAC0620554660B00DB518D /* Intervals */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 1DEB914A08733D8E0010E9CD /* Build configuration list for PBXNativeTarget "Intervals" */;
@@ -171,6 +210,7 @@
 			targets = (
 				D2AAC0620554660B00DB518D /* Intervals */,
 				2321A2B51067949900FDB440 /* IntervalsTest */,
+				23BFCF0110BC07B200B0C705 /* nqueens */,
 			);
 		};
 /* End PBXProject section */
@@ -184,12 +224,21 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		23BFCEFF10BC07B200B0C705 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				23BFCF0710BC07C700B0C705 /* nqueens.c in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		D2AAC0610554660B00DB518D /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 				23EBC04D105CCC1B00D73DD2 /* interval.c in Sources */,
 				23B7152710BAEC4F00EFB43C /* thread_pool.c in Sources */,
+				23BFCED410BBF60500B0C705 /* nqueens.c in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -200,6 +249,11 @@
 			isa = PBXTargetDependency;
 			target = D2AAC0620554660B00DB518D /* Intervals */;
 			targetProxy = 2321A31310679CBC00FDB440 /* PBXContainerItemProxy */;
+		};
+		23BFCF1110BC07F900B0C705 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = D2AAC0620554660B00DB518D /* Intervals */;
+			targetProxy = 23BFCF1010BC07F900B0C705 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -253,6 +307,7 @@
 				GCC_PREPROCESSOR_DEFINITIONS = NDEBUG;
 				GCC_WARN_ABOUT_RETURN_TYPE = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
+				ONLY_ACTIVE_ARCH = YES;
 				PREBINDING = NO;
 				SDKROOT = macosx10.6;
 			};
@@ -288,6 +343,36 @@
 			};
 			name = Release;
 		};
+		23BFCF0410BC07B300B0C705 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				COPY_PHASE_STRIP = NO;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_ENABLE_FIX_AND_CONTINUE = YES;
+				GCC_MODEL_TUNING = G5;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				INSTALL_PATH = /usr/local/bin;
+				PREBINDING = NO;
+				PRODUCT_NAME = nqueens;
+			};
+			name = Debug;
+		};
+		23BFCF0510BC07B300B0C705 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				COPY_PHASE_STRIP = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				GCC_ENABLE_FIX_AND_CONTINUE = NO;
+				GCC_MODEL_TUNING = G5;
+				INSTALL_PATH = /usr/local/bin;
+				PREBINDING = NO;
+				PRODUCT_NAME = nqueens;
+				ZERO_LINK = NO;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -314,6 +399,15 @@
 			buildConfigurations = (
 				2321A2B81067949A00FDB440 /* Debug */,
 				2321A2B91067949A00FDB440 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		23BFCF1410BC080400B0C705 /* Build configuration list for PBXNativeTarget "nqueens" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				23BFCF0410BC07B300B0C705 /* Debug */,
+				23BFCF0510BC07B300B0C705 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

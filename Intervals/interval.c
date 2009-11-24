@@ -305,7 +305,10 @@ static point_t *point(point_t *bound, interval_task_t task, uint64_t counts)
 }
 
 static inline void point_add_count(point_t *point, uint64_t count) {
-	uint64_t new_count = atomic_add(&point->counts, count);
+#   ifndef NDEBUG
+	uint64_t new_count = 
+#   endif
+	atomic_add(&point->counts, count);
 	debugf("%p point_add_count(%llx) new_count=%llx", point, count, new_count);
 }
 
@@ -413,10 +416,30 @@ void root_interval(interval_block_t blk)
 	});
 }
 
+point_t *default_bound_unchecked(current_interval_info_t *info) 
+{
+	point_t *bound = info->end->bound;
+	if(bound == NULL)
+		return info->end;
+	return bound;
+}
+
+point_t *default_bound()
+{
+	current_interval_info_t *info = current_interval_info();
+	if(info) {
+		return default_bound_unchecked(info);
+	}
+	return NULL;
+}
+
 interval_t interval(point_t *bound, interval_block_t blk)
 {
 	current_interval_info_t *info = current_interval_info();
 	if(info != NULL) {
+		if(bound == NULL)
+			bound = default_bound_unchecked(info);
+		
 		if(check_can_add_dep(info, bound) == INTERVAL_OK) {
 			point_t *currentStart = info->start;
 			

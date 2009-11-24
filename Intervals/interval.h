@@ -44,6 +44,7 @@ interval_err_t interval_schedule();
 #pragma mark Querying Intervals and Points
 point_t *interval_bound(interval_t interval);
 point_t *point_bound(point_t *point);
+point_t *default_bound(); // bound of current interval, unless interval is root, in which case it is root.end
 bool point_hb(point_t *before, point_t *after);
 bool point_bounded_by(point_t *point, point_t *bound);
 
