@@ -10,6 +10,10 @@
 		2321A2BB106794BB00FDB440 /* libIntervals.dylib in Frameworks */ = {isa = PBXBuildFile; fileRef = D2AAC0630554660B00DB518D /* libIntervals.dylib */; };
 		2321A2C21067953900FDB440 /* test.c in Sources */ = {isa = PBXBuildFile; fileRef = 2321A2BD106794DA00FDB440 /* test.c */; };
 		2321A36E1067A59500FDB440 /* CoreServices.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 2321A36D1067A59500FDB440 /* CoreServices.framework */; };
+		23B7152610BAEC4F00EFB43C /* thread_pool.h in Headers */ = {isa = PBXBuildFile; fileRef = 23B7152410BAEC4F00EFB43C /* thread_pool.h */; };
+		23B7152710BAEC4F00EFB43C /* thread_pool.c in Sources */ = {isa = PBXBuildFile; fileRef = 23B7152510BAEC4F00EFB43C /* thread_pool.c */; };
+		23B7152910BAEE3E00EFB43C /* atomic.h in Headers */ = {isa = PBXBuildFile; fileRef = 23B7152810BAEE3E00EFB43C /* atomic.h */; };
+		23BFCDB910BBCB4E00B0C705 /* internal.h in Headers */ = {isa = PBXBuildFile; fileRef = 23BFCDB810BBCB4E00B0C705 /* internal.h */; };
 		23EBC04C105CCC1B00D73DD2 /* interval.h in Headers */ = {isa = PBXBuildFile; fileRef = 23EBC04A105CCC1B00D73DD2 /* interval.h */; };
 		23EBC04D105CCC1B00D73DD2 /* interval.c in Sources */ = {isa = PBXBuildFile; fileRef = 23EBC04B105CCC1B00D73DD2 /* interval.c */; };
 /* End PBXBuildFile section */
@@ -30,6 +34,10 @@
 		2321A2BC106794DA00FDB440 /* test.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = test.h; sourceTree = "<group>"; };
 		2321A2BD106794DA00FDB440 /* test.c */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.c; path = test.c; sourceTree = "<group>"; };
 		2321A36D1067A59500FDB440 /* CoreServices.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreServices.framework; path = System/Library/Frameworks/CoreServices.framework; sourceTree = SDKROOT; };
+		23B7152410BAEC4F00EFB43C /* thread_pool.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = thread_pool.h; sourceTree = "<group>"; };
+		23B7152510BAEC4F00EFB43C /* thread_pool.c */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.c; path = thread_pool.c; sourceTree = "<group>"; };
+		23B7152810BAEE3E00EFB43C /* atomic.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = atomic.h; sourceTree = "<group>"; };
+		23BFCDB810BBCB4E00B0C705 /* internal.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = internal.h; sourceTree = "<group>"; };
 		23EBC04A105CCC1B00D73DD2 /* interval.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = interval.h; sourceTree = "<group>"; };
 		23EBC04B105CCC1B00D73DD2 /* interval.c */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.c; path = interval.c; sourceTree = "<group>"; };
 		D2AAC0630554660B00DB518D /* libIntervals.dylib */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.dylib"; includeInIndex = 0; path = libIntervals.dylib; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -70,8 +78,12 @@
 		08FB7795FE84155DC02AAC07 /* Source */ = {
 			isa = PBXGroup;
 			children = (
+				23BFCDB810BBCB4E00B0C705 /* internal.h */,
 				23EBC04A105CCC1B00D73DD2 /* interval.h */,
 				23EBC04B105CCC1B00D73DD2 /* interval.c */,
+				23B7152410BAEC4F00EFB43C /* thread_pool.h */,
+				23B7152510BAEC4F00EFB43C /* thread_pool.c */,
+				23B7152810BAEE3E00EFB43C /* atomic.h */,
 			);
 			name = Source;
 			sourceTree = "<group>";
@@ -102,6 +114,9 @@
 			buildActionMask = 2147483647;
 			files = (
 				23EBC04C105CCC1B00D73DD2 /* interval.h in Headers */,
+				23B7152610BAEC4F00EFB43C /* thread_pool.h in Headers */,
+				23B7152910BAEE3E00EFB43C /* atomic.h in Headers */,
+				23BFCDB910BBCB4E00B0C705 /* internal.h in Headers */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -174,6 +189,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				23EBC04D105CCC1B00D73DD2 /* interval.c in Sources */,
+				23B7152710BAEC4F00EFB43C /* thread_pool.c in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -234,6 +250,7 @@
 			buildSettings = {
 				ARCHS = "$(ARCHS_STANDARD_32_64_BIT)";
 				GCC_C_LANGUAGE_STANDARD = gnu99;
+				GCC_PREPROCESSOR_DEFINITIONS = NDEBUG;
 				GCC_WARN_ABOUT_RETURN_TYPE = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				PREBINDING = NO;

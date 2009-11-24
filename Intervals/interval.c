@@ -30,70 +30,25 @@
  
  */
 
-#include "interval.h"
 #include <stdlib.h>
 #include <stdarg.h>
 #include <assert.h>
 #include <limits.h>
-#include <dispatch/dispatch.h>
 #include <pthread.h>
 #include <stdbool.h>
 #include <inttypes.h>
 #include <stdio.h>
-#include <libkern/OSAtomic.h>
 #include <string.h>
 #include <Block.h>
 
-#pragma mark GCC Macros
+#include "interval.h"
+#include "thread_pool.h"
 
-#define ALIGNED(n) __attribute__((aligned(n)))
-
-#define atomic_xchg __sync_lock_test_and_set
-#define atomic_cmpxchg __sync_bool_compare_and_swap
-#define atomic_add(v, a) __sync_add_and_fetch(v, a)
-#define atomic_sub(v, a) __sync_sub_and_fetch(v, a)
-#define atomic_rel_lock(v) __sync_lock_release(v)
-
-#pragma mark Debugging Macros
+#include "atomic.h"
+#include "internal.h"
 
 #ifndef NDEBUG
-
-static dispatch_once_t init_debug;
-static dispatch_queue_t debug_queue;
 static uint64_t live_points; // tracks number of live intervals when debugging
-
-static void debugf(const char *fmt, ...) {
-	dispatch_once(&init_debug, ^{
-		debug_queue = dispatch_queue_create("ch.ethz.intervals.debug", NULL);
-	});
-	
-	pthread_t self = pthread_self();
-	
-	va_list ap;
-	va_start(ap, fmt);
-	const int initial_size = 128, self_bytes = 18;
-	char *res = (char*)malloc(initial_size + self_bytes);
-	int size = vsnprintf(res + self_bytes, initial_size, fmt, ap) + 1;
-	if(size >= initial_size) {
-		free(res);
-		res = (char*)malloc(size * sizeof(char) + self_bytes);
-		vsnprintf(res + self_bytes, size, fmt, ap);
-	}
-	va_end(ap);
-	
-	snprintf(res, self_bytes, "%016lx:", (intptr_t)self);
-	res[self_bytes - 1] = ' ';
-	
-	dispatch_async(debug_queue, ^{
-		fprintf(stderr, "%s\n", res);
-		free(res);
-	});
-}
-
-#else
-
-#  define debugf(...)
-
 #endif
 
 #pragma mark Data Types and Simple Accessors
@@ -162,10 +117,8 @@ struct current_interval_info_t {
 
 #pragma mark Manipulating Interval Tasks
 
-static void execute_interval(void *ctx);
-
 #define EMPTY_TASK            0
-#define TASK_SEMAPHORE_TAG    1
+#define TASK_LATCH_TAG        1
 #define TASK_BLOCK_TAG        2
 #define TASK_COPIED_BLOCK_TAG 3
 #define TASK_TAG              3
@@ -184,14 +137,15 @@ static void task_dispatch(point_t *pnt, interval_task_t task) {
 		int tag = (task & TASK_TAG);
 		intptr_t ptr = (task & ~TASK_TAG);
 		
-		if(tag == TASK_SEMAPHORE_TAG) {
-			dispatch_semaphore_t signal = (dispatch_semaphore_t)ptr;
-			dispatch_semaphore_signal(signal);
+		if(tag == TASK_LATCH_TAG) {
+			interval_pool_latch_t *latch = (interval_pool_latch_t*)ptr;
+			interval_pool_signal_latch(latch);
 			point_release(pnt);
 		} else if(tag == TASK_BLOCK_TAG || tag == TASK_COPIED_BLOCK_TAG) {
 			// execute_interval will invoke task_execute (below) which 
 			// will release the ref.
-			dispatch_async_f(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), pnt, execute_interval);		
+//			dispatch_async_f(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), pnt, interval_execute);		
+			interval_pool_enqueue(pnt);
 		}		
 	} else {
 		point_release(pnt);
@@ -367,9 +321,7 @@ static inline void point_unlock(point_t *point) {
 
 static void interval_schedule_unchecked(current_interval_info_t *info);
 
-// Stub which executes the interval's task and then frees the interval.
-static void execute_interval(void *ctx) {
-	point_t *start = (point_t*)ctx;
+void interval_execute(point_t *start) {
 	point_t *end = start->bound;
 	
 	current_interval_info_t info;
@@ -434,26 +386,31 @@ void root_interval(interval_block_t blk)
 {
 	init_current_interval_key();
 	assert(current_interval_info() == NULL);
-
-	// Create root end point and configure it to signal when done:
-	dispatch_semaphore_t signal = dispatch_semaphore_create(0);	
-	interval_task_t signalTask = task(signal, TASK_SEMAPHORE_TAG);	
-	point_t *root_end = point(NULL, signalTask, TO_COUNT(1, 1));   // refs held by: task.  Waiting for us.
-	debugf("%p = root_end", root_end);
 	
-	// Start root block executing:
-	current_interval_info_t root_info;	
-	push_current_interval_info(&root_info, NULL, root_end);
-	blk(root_end);	
-	interval_schedule_unchecked(&root_info);
-	arrive(root_end, ONE_WAIT_COUNT);	
-	pop_current_interval_info(&root_info);	
-	
-	// Wait until root_end occurs (it may already have done so):
-	dispatch_semaphore_wait(signal, DISPATCH_TIME_FOREVER);
-	dispatch_release(signal);	
-	
-	assert(live_points == 0);
+	interval_pool_run(0, ^(interval_pool_t *pool) {
+		
+		// Create root end point and configure it to signal when done:
+		interval_pool_latch_t latch;
+		interval_pool_init_latch(&latch);
+		
+		interval_task_t signalTask = task(&latch, TASK_LATCH_TAG);	
+		point_t *root_end = point(NULL, signalTask, TO_COUNT(1, 1));   // refs held by: task.  Waiting for us.
+		debugf("%p = root_end", root_end);
+		
+		// Start root block executing:
+		current_interval_info_t root_info;	
+		push_current_interval_info(&root_info, NULL, root_end);
+		blk(root_end);	
+		interval_schedule_unchecked(&root_info);
+		arrive(root_end, ONE_WAIT_COUNT);	
+		pop_current_interval_info(&root_info);
+		
+		// Wait until root_end occurs (it may already have done so):
+		//    Note that the pool will shutdown when this block returns.
+		interval_pool_wait_latch(&latch);
+		
+		assert(live_points == 0);		
+	});
 }
 
 interval_t interval(point_t *bound, interval_block_t blk)
@@ -506,8 +463,9 @@ interval_err_t subinterval(interval_block_t blk)
 	// Create tasks:
 	//    start will run blk (no need to copy, we're still on the stack)
 	//    end will signal 'signal' when its occurred
-	dispatch_semaphore_t signal = dispatch_semaphore_create(0);	
-	interval_task_t signalTask = task(signal, TASK_SEMAPHORE_TAG);
+	interval_pool_latch_t latch;
+	interval_pool_init_latch(&latch);
+	interval_task_t signalTask = task(&latch, TASK_LATCH_TAG);
 	interval_task_t blkTask = task(blk, TASK_BLOCK_TAG);
 	
 	// Create points:
@@ -523,9 +481,8 @@ interval_err_t subinterval(interval_block_t blk)
 	
 	// Execute the user's code then wait until 'end' has occurred
 	// (and, hence, executed notify).
-	execute_interval(start);
-	dispatch_semaphore_wait(signal, DISPATCH_TIME_FOREVER); // Signal is sent from sync_func()	
-	dispatch_release(signal);
+	interval_execute(start);
+	interval_pool_wait_latch(&latch);
 	return INTERVAL_OK;
 }
 
@@ -837,3 +794,39 @@ void interval_release(interval_t interval) {
 	point_release(interval.end);
 }
 
+// Define down here so as not to include dispatch
+// and create accidental dependencies:
+#ifndef NDEBUG
+#include <dispatch/dispatch.h>
+
+static dispatch_once_t init_debug;
+static dispatch_queue_t debug_queue;
+
+void interval_debugf(const char *fmt, ...) {
+	dispatch_once(&init_debug, ^{
+		debug_queue = dispatch_queue_create("ch.ethz.intervals.debug", NULL);
+	});
+	
+	pthread_t self = pthread_self();
+	
+	va_list ap;
+	va_start(ap, fmt);
+	const int initial_size = 128, self_bytes = 18;
+	char *res = (char*)malloc(initial_size + self_bytes);
+	int size = vsnprintf(res + self_bytes, initial_size, fmt, ap) + 1;
+	if(size >= initial_size) {
+		free(res);
+		res = (char*)malloc(size * sizeof(char) + self_bytes);
+		vsnprintf(res + self_bytes, size, fmt, ap);
+	}
+	va_end(ap);
+	
+	snprintf(res, self_bytes, "%016lx:", (intptr_t)self);
+	res[self_bytes - 1] = ' ';
+	
+	//dispatch_async(debug_queue, ^{
+		fprintf(stderr, "%s\n", res);
+		free(res);
+	//});
+}
+#endif
