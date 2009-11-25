@@ -121,9 +121,9 @@ interval_err_t subinterval_f(task_func_t task, void *userdata);
 /// \c after.  If either \c before or \c after is \c NULL, then
 /// this method has no effect.  For this method to be legal, \em one
 /// of the following safety conditions must be met:
-/// \arg \c after must be a point on an unscheduled interval.
-/// \arg \c after must be the end of the current interval.
-/// \arg the end of the current interval must <em>happen before</em> \c after.
+///   - \c after must be a point on an unscheduled interval.
+///   - \c after must be the end of the current interval.
+///   - the end of the current interval must <em>happen before</em> \c after.
 /// If at least one of these conditions is not met, then the function
 /// will return \c INTERVAL_EDGE_REQUIRED.
 ///
