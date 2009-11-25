@@ -61,6 +61,7 @@ static void llstack_free(llstack_t **stack) {
 #define DEQUE_PAD 0
 #define DEQUE_OFFSET 0
 
+typedef struct interval_pool_t interval_pool_t;
 typedef struct interval_worker_t interval_worker_t;
 typedef struct point_t interval_work_item_t;
 typedef struct deque_t deque_t;
