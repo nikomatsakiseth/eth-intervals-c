@@ -12,16 +12,19 @@
 
 #include "interval.h"
 
-typedef struct interval_pool_t interval_pool_t;
-typedef void (*interval_pool_func_t)(void *context);
+#ifndef INTERVALS_USE_LIB_DISPATCH
 typedef int interval_pool_latch_t;
+#else
+#include <dispatch/dispatch.h>
+typedef dispatch_semaphore_t interval_pool_latch_t;
+#endif
 
-void interval_pool_run(int workers, void (^)(interval_pool_t *pool));
+void interval_pool_run(int workers, void (^)());
 void interval_pool_enqueue(point_t *start_point);
 
 void interval_pool_init_latch(interval_pool_latch_t *latch);
 void interval_pool_signal_latch(interval_pool_latch_t *latch); // should occur precisely once
 void interval_pool_wait_latch(interval_pool_latch_t *latch);   // also frees any memory associated with the latch
 
-#endif
 
+#endif

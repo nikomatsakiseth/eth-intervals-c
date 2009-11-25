@@ -390,7 +390,7 @@ void root_interval(interval_block_t blk)
 	init_current_interval_key();
 	assert(current_interval_info() == NULL);
 	
-	interval_pool_run(0, ^(interval_pool_t *pool) {
+	interval_pool_run(0, ^() {
 		
 		// Create root end point and configure it to signal when done:
 		interval_pool_latch_t latch;

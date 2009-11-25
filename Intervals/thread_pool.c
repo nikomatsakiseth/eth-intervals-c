@@ -7,6 +7,8 @@
  *  Please see the file LICENSE for distribution and licensing details.
  */
 
+#ifndef INTERVALS_USE_LIB_DISPATCH
+
 #include <pthread.h>
 #include <stdlib.h>
 #include <limits.h>
@@ -14,6 +16,8 @@
 #include "thread_pool.h"
 #include "internal.h"
 #include "atomic.h"
+
+//#define PROFILE
 
 #pragma mark Miscellaneous Configuration
 
@@ -262,9 +266,7 @@ static interval_work_item_t *deque_owner_take(deque_t *deque)
 
 static interval_work_item_t *deque_steal(deque_t *deque)
 {
-	if(!OSSpinLockTry(&deque->lock))
-		return NULL;
-
+	OSSpinLockLock(&deque->lock);	
 	deque_index_t mask = deque->work_items_mask;
 	deque_index_t head = deque->thief_head;
 	unsigned index = deque_index(mask, head);
@@ -643,3 +645,5 @@ void interval_pool_wait_latch(interval_pool_latch_t *latch)
 	while(!*latch)
 		worker_recurse(worker);
 }
+
+#endif
