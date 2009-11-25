@@ -17,6 +17,8 @@
 #include "atomic.h"
 #include "internal.h"
 
+FILE *dump;
+
 typedef struct board_t board_t;
 struct board_t {
 	int *board;
@@ -94,11 +96,13 @@ void position_list_free(position_list_t *pos) {
 }
 
 void position_list_dump(position_list_t *pos) {
-	fprintf(stderr, "%20p position:", pthread_self());
-	for(position_list_t *cur = pos; cur != NULL; cur = cur->previous) {
-		fprintf(stderr, " <%d,%d>", cur->row, cur->col);
+	if(dump) {
+		fprintf(dump, "%20p position:", pthread_self());
+		for(position_list_t *cur = pos; cur != NULL; cur = cur->previous) {
+			fprintf(dump, " <%d,%d>", cur->row, cur->col);
+		}
+		fprintf(dump, "\n");
 	}
-	fprintf(stderr, "\n");
 }
 
 board_t *position_list_to_board(position_list_t *position, int problem_size) {
@@ -166,7 +170,7 @@ void solve_one_level(position_list_t *start_position, // will be freed
 		if(current_row < problem_size) {
 			if(current_row == cutoff_level) {
 				board_t *board = position_list_to_board(start_position, problem_size);
-//				position_list_dump(start_position);
+				position_list_dump(start_position);
 				solve_sequentially(board, current_row, solution_count);
 				board_free(board);
 			} else {
@@ -192,6 +196,7 @@ void solve_one_level(position_list_t *start_position, // will be freed
 
 void solve_in_parallel(int problem_size, int cutoff_level, int *solution_count)
 {
+	assert(cutoff_level > 0);
 	if(cutoff_level == 0) {
 		board_t *board = board_create(problem_size);
 		solve_sequentially(board, 0, solution_count);
@@ -213,13 +218,15 @@ int main(int argc, char *argv[]) {
 		return 1;
 	}
 	
+//	dump = fopen("nqueens_dump.txt", "w");
+	
 	const int problem_size = atoi(argv[1]);
 	const int cutoff_level = atoi(argv[2]);
 	
 	int seq_solution_count = 0;
 	clock_t seq_clock0 = clock();
 	board_t *board = board_create(problem_size);
-	solve_sequentially(board, 0, &seq_solution_count);
+//	solve_sequentially(board, 0, &seq_solution_count);
 	board_free(board);
 	clock_t seq_clock1 = clock();
 	double seq_clockd = seq_clock1 - seq_clock0;

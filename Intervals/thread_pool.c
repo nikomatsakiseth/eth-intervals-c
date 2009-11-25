@@ -63,13 +63,12 @@ static void llstack_free(llstack_t **stack) {
 
 typedef struct interval_pool_t interval_pool_t;
 typedef struct interval_worker_t interval_worker_t;
-typedef struct point_t interval_work_item_t;
 typedef struct deque_t deque_t;
 
 typedef unsigned deque_index_t;
 #define DEQUE_INDEX_MAX UINT_MAX
 struct deque_t {	
-	interval_work_item_t **work_items; // Logical ength is always a power of two.
+	point_t **work_items; // Logical ength is always a power of two.
 	deque_index_t work_items_mask;     // = logical length of array - 1.
 	deque_index_t owner_head;          // May lag behind thief_head.
 	deque_index_t owner_tail;          // Logical index; always correct.
@@ -155,8 +154,8 @@ static void deque_init(deque_t *deque)
 {
 	const deque_index_t llen = (1 << 10);
 	size_t size = deque_alloc_size(llen);
-	deque->work_items = (interval_work_item_t**)calloc(size, sizeof(interval_work_item_t*));
-	memset(deque->work_items, 0, size * sizeof(interval_work_item_t*));
+	deque->work_items = (point_t**)calloc(size, sizeof(point_t*));
+	memset(deque->work_items, 0, size * sizeof(point_t*));
 	deque->work_items_mask = deque_mask(llen);
 	deque->owner_head = deque->owner_tail = deque->thief_head = 0;
 	deque->lock = 0;
@@ -169,14 +168,14 @@ static void deque_free(deque_t *deque)
 
 static void deque_copy_array(deque_t *deque, deque_index_t new_llen)
 {	
-	interval_work_item_t **old_work_items = deque->work_items;
+	point_t **old_work_items = deque->work_items;
 	deque_index_t old_mask = deque->work_items_mask;
 	
 	size_t new_size = deque_alloc_size(new_llen);
 	deque_index_t new_mask = deque_mask(new_llen);
-	interval_work_item_t **new_work_items = (interval_work_item_t**)calloc(new_size, sizeof(interval_work_item_t*));
+	point_t **new_work_items = (point_t**)calloc(new_size, sizeof(point_t*));
 	for(deque_index_t i = deque->owner_head, c = deque->owner_tail; i < c; i++) {
-		interval_work_item_t *item = old_work_items[deque_index(old_mask, i)];
+		point_t *item = old_work_items[deque_index(old_mask, i)];
 		new_work_items[deque_index(new_mask, i)] = item;
 	}
 	
@@ -215,7 +214,7 @@ static void deque_expand(deque_t *deque)
 	OSSpinLockUnlock(&deque->lock);
 }
 
-static void deque_owner_put(deque_t *deque, interval_work_item_t *work_item)
+static void deque_owner_put(deque_t *deque, point_t *work_item)
 {
 	for(;;) {
 		deque_index_t mask = deque->work_items_mask;
@@ -239,7 +238,7 @@ static void deque_owner_put(deque_t *deque, interval_work_item_t *work_item)
 	} 
 }
 
-static interval_work_item_t *deque_owner_take(deque_t *deque)
+static point_t *deque_owner_take(deque_t *deque)
 {
 	deque_index_t mask = deque->work_items_mask;
 	deque_index_t head = deque->owner_head;
@@ -251,7 +250,7 @@ static interval_work_item_t *deque_owner_take(deque_t *deque)
 	deque_index_t last_tail = tail - 1;
 	unsigned last_index = deque_index(mask, last_tail);
 	
-	interval_work_item_t *result = atomic_xchg(&deque->work_items[last_index], NULL);
+	point_t *result = atomic_xchg(&deque->work_items[last_index], NULL);
 
 	// If we got back NULL, then it was stolen.  Update our view
 	// of the head.
@@ -265,14 +264,14 @@ static interval_work_item_t *deque_owner_take(deque_t *deque)
 	return result;
 }
 
-static interval_work_item_t *deque_steal(deque_t *deque)
+static point_t *deque_steal(deque_t *deque)
 {
 	OSSpinLockLock(&deque->lock);	
 	deque_index_t mask = deque->work_items_mask;
 	deque_index_t head = deque->thief_head;
 	unsigned index = deque_index(mask, head);
 	
-	interval_work_item_t *result = atomic_xchg(&deque->work_items[index], NULL);
+	point_t *result = atomic_xchg(&deque->work_items[index], NULL);
 	
 	if(result != NULL)
 		deque->thief_head = head + 1;	
@@ -422,9 +421,9 @@ static void worker_main(interval_worker_t *worker)
 	
 }
 
-static interval_work_item_t *worker_steak_work(interval_worker_t *worker)
+static point_t *worker_steak_work(interval_worker_t *worker)
 {
-	interval_work_item_t *stolen_item = NULL;
+	point_t *stolen_item = NULL;
 	
 	pthread_mutex_lock(&worker->lock);
 	
@@ -443,7 +442,7 @@ static interval_work_item_t *worker_steak_work(interval_worker_t *worker)
 	return stolen_item;
 }
 
-static inline void worker_enqueue(interval_worker_t *worker, interval_work_item_t *work_item)
+static inline void worker_enqueue(interval_worker_t *worker, point_t *work_item)
 {
 	debugf("enqueued %p", work_item);
 	deque_owner_put(&worker->deque, work_item);
@@ -451,7 +450,7 @@ static inline void worker_enqueue(interval_worker_t *worker, interval_work_item_
 
 static bool worker_do_work(interval_worker_t *worker, int steal_attempts)
 {
-	interval_work_item_t *work_item;
+	point_t *work_item;
 	
 	if((work_item = deque_owner_take(&worker->deque)) != NULL) {
 		debugf("took %p", work_item);

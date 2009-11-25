@@ -370,6 +370,15 @@ static void arrive(point_t *point, uint64_t count) {
 
 static void interval_add_hb_unchecked(point_t *before, point_t *after, bool synthetic);
 
+static interval_err_t check_no_cycle(current_interval_info_t *info, point_t *from_pnt, point_t *to_pnt) 
+{
+#   ifdef INTERVAL_SAFETY_CHECKS_ENABLED
+	if(point_hb(to_pnt, from_pnt))
+		return INTERVAL_CYCLE;
+#   endif
+	return INTERVAL_OK;
+}
+
 static interval_err_t check_can_add_dep(current_interval_info_t *info, point_t *pnt) 
 {
 #   ifdef INTERVAL_SAFETY_CHECKS_ENABLED
@@ -382,6 +391,19 @@ static interval_err_t check_can_add_dep(current_interval_info_t *info, point_t *
 #   endif
 	return INTERVAL_OK;
 }
+
+static interval_err_t check_can_add_hb(current_interval_info_t *info, point_t *from_pnt, point_t *to_pnt)
+{
+#   ifdef INTERVAL_SAFETY_CHECKS_ENABLED
+	interval_err_t result;
+	if((result = check_can_add_dep(info, to_pnt)) != INTERVAL_OK)
+		return result;
+	if((result = check_no_cycle(info, from_pnt, to_pnt)) != INTERVAL_OK)
+		return result;
+#   endif
+	return INTERVAL_OK;
+}
+
 
 #pragma mark Creating Intervals 
 
@@ -439,10 +461,16 @@ interval_t interval(point_t *bound, interval_block_t blk)
 	if(info != NULL) {
 		if(bound == NULL)
 			bound = default_bound_unchecked(info);
+				
+		point_t *currentStart = info->start;
 		
-		if(check_can_add_dep(info, bound) == INTERVAL_OK) {
-			point_t *currentStart = info->start;
-			
+		interval_err_t err;
+		if(currentStart == NULL)
+			err = check_can_add_dep(info, bound);
+		else
+			err = check_can_add_hb(info, currentStart, bound);
+
+		if(err == INTERVAL_OK) {			
 			interval_task_t startTask = task(Block_copy(blk), TASK_COPIED_BLOCK_TAG);
 
 			// Refs on the start point: task, unscheduled list, and optionally currentStart
@@ -559,12 +587,15 @@ static void interval_add_hb_unchecked(point_t *before, point_t *after, bool synt
 }
 
 interval_err_t interval_add_hb(point_t *before, point_t *after) {
+	if(before == NULL || after == NULL)
+		return INTERVAL_OK;
+	
 	current_interval_info_t *info = current_interval_info();
 	if(info == NULL)
 		return INTERVAL_NO_ROOT;
 
 	interval_err_t err;
-	if((err = check_can_add_dep(info, after)) != INTERVAL_OK)
+	if((err = check_can_add_hb(info, before, after)) != INTERVAL_OK)
 		return err;
 	
 	interval_add_hb_unchecked(before, after, false);
