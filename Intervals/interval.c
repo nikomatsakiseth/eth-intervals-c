@@ -72,7 +72,6 @@ typedef intptr_t interval_task_t;
 
 typedef struct edge_t {
 	epoint_t to_points[EDGE_CHUNK_SIZE];
-	epoch_t from_epochs[EDGE_CHUNK_SIZE];
 	struct edge_t *next;
 } edge_t;
 
@@ -349,17 +348,23 @@ static void arrive(point_t *point, uint64_t count) {
 	debugf("%p arrive(%llx) new_count=%llx", point, count, new_count);
 	
 	if(new_wait_count == 0) {
-		edge_t *notify;
+		edge_t notify;
+		notify.next = NULL;
+		notify.to_points[0] = NULL_EPOINT;
 		
 		// We must add to counts[side] atomically in case of other, simultaneous
-		// threads adjusting the ref count.
+		// threads adjusting the ref count.  Note that we copy into notify by
+		// value.  This is because, once we released the lock but before we
+		// invoke arrive_edge(), other threads might add themselves into the
+		// out_edges array.  They would then be over-notified of our termination.
 		point_lock(point);
 		atomic_add(&point->counts, TO_WAIT_COUNT(WC_STARTED));		
-		notify = point->out_edges;
+		if(point->out_edges)
+			notify = *point->out_edges;		
 		point_unlock(point);
 		
 		// Notify those coming after us and dispatch task (if any)
-		arrive_edge(notify, ONE_WAIT_COUNT);
+		arrive_edge(&notify, ONE_WAIT_COUNT);
 		if(point->bound)
 			arrive(point->bound, ONE_WAIT_COUNT);
 		task_dispatch(point, point->task);
