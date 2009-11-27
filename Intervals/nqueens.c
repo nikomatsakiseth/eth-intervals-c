@@ -226,7 +226,7 @@ int main(int argc, char *argv[]) {
 	int seq_solution_count = 0;
 	clock_t seq_clock0 = clock();
 	board_t *board = board_create(problem_size);
-//	solve_sequentially(board, 0, &seq_solution_count);
+	solve_sequentially(board, 0, &seq_solution_count);
 	board_free(board);
 	clock_t seq_clock1 = clock();
 	double seq_clockd = seq_clock1 - seq_clock0;
@@ -243,6 +243,8 @@ int main(int argc, char *argv[]) {
 	});
 	clock_t par_clock1 = clock();
 	double par_clockd = par_clock1 - par_clock0;
+	
+	assert(seq_solution_count == *par_solution_count);
 	
 	printf("Par. Solution Count: %d\n", *par_solution_count);
 	printf("Par. Processor Time: %.3f seconds\n", par_clockd / CLOCKS_PER_SEC);
