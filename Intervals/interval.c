@@ -580,7 +580,7 @@ interval_err_t interval_lock(interval_t interval, guard_t *guard) {
 	if((err = check_can_add_dep(info, interval.start)) != INTERVAL_OK)
 	   return err;
 	
-	point_t *pnt = atomic_xchg(&guard->last_lock, interval.end);
+	point_t *pnt = atomic_xchg_ptr(&guard->last_lock, interval.end);
 	if(pnt != NULL)
 		interval_add_hb_unchecked(pnt, interval.start, true);
 	return INTERVAL_OK;
@@ -819,7 +819,7 @@ void interval_release(interval_t interval) {
 
 // Define down here so as not to include dispatch
 // and create accidental dependencies:
-#ifndef NDEBUG
+#if defined(__APPLE__) && !defined(NDEBUG)
 #include <dispatch/dispatch.h>
 
 static dispatch_once_t init_debug;

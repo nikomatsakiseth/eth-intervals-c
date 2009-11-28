@@ -15,8 +15,12 @@
 void interval_execute(point_t *start_point);
 
 #ifndef NDEBUG
+#  ifdef APPLE
 void interval_debugf(const char *fmt, ...);
-#define debugf(...) interval_debugf(__VA_ARGS__)
+#    define debugf(...) interval_debugf(__VA_ARGS__)
+#  else
+#    define debugf(...) fprintf(stderr, __VA_ARGS__)
+#  endif
 #else
-#define debugf(...)
+#  define debugf(...)
 #endif
