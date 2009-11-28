@@ -19,7 +19,7 @@ void interval_execute(point_t *start_point);
 void interval_debugf(const char *fmt, ...);
 #    define debugf(...) interval_debugf(__VA_ARGS__)
 #  else
-#    define debugf(...) fprintf(stderr, __VA_ARGS__)
+#    define debugf(...) do { fprintf(stderr, __VA_ARGS__); fputc('\n', stderr); } while(0)
 #  endif
 #else
 #  define debugf(...)

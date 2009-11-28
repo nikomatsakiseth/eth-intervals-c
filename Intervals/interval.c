@@ -976,9 +976,9 @@ void interval_debugf(const char *fmt, ...) {
 	snprintf(res, self_bytes, "%016lx:", (intptr_t)self);
 	res[self_bytes - 1] = ' ';
 	
-	//dispatch_async(debug_queue, ^{
+	dispatch_async(debug_queue, ^{
 		fprintf(stderr, "%s\n", res);
 		free(res);
-	//});
+	});
 }
 #endif
