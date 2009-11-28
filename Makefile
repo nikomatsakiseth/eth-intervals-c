@@ -30,4 +30,4 @@ nqueens: library
 	$(CC) $(CCOPTS) -o $(BINDIR)/nqueens Intervals/nqueens.c $(BINDIR)/intervals.a -lpthread -lBlocksRuntime
 
 test: nqueens
-	LD_LIBRARY_PATH=$(PWD)/llvm/install/lib $(BINDIR)/nqueens 8 2
+	LD_LIBRARY_PATH=$(PWD)/llvm/install/lib $(BINDIR)/nqueens 14 2
