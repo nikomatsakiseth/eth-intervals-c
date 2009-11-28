@@ -1,0 +1,12 @@
+#!/bin/bash
+# Do not run individually. Part of  build-clang script!
+# From http://clang.llvm.org/get_started.html
+BASEDIR=$PWD/$(dirname $0)/llvm
+cd $BASEDIR
+svn co http://llvm.org/svn/llvm-project/llvm/trunk llvm >> $BASEDIR/log
+cd $BASEDIR/llvm/tools
+svn co http://llvm.org/svn/llvm-project/cfe/trunk clang >> $BASEDIR/log
+cd $BASEDIR/llvm
+./configure --enable-optimized --prefix=$BASEDIR/install >> $BASEDIR/log
+make >> $BASEDIR/log
+make install $BASEDIR/log

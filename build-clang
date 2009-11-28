@@ -1,0 +1,16 @@
+#!/bin/bash
+# From http://clang.llvm.org/get_started.html
+BASEDIR=$PWD/$(dirname $0)/llvm
+
+echo "Note: all logs are in $BASEDIR/log"
+
+echo "Deleting Previous Build"
+rm -rf $BASEDIR
+mkdir $BASEDIR
+mkdir $BASEDIR/install
+
+echo "Installing LLVM and Clang"
+script -a -c "$0.llvm" $BASEDIR/log > /dev/null
+
+echo "Installing compiler-rt"
+script -a -c "$0.compiler-rt" $BASEDIR/log > /dev/null

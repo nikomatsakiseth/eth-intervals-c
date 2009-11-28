@@ -1,0 +1,10 @@
+#!/bin/bash
+# Do not run individually.  Part of build-clang script.
+BASEDIR=$PWD/$(dirname $0)/llvm
+cd $BASEDIR
+svn co http://llvm.org/svn/llvm-project/compiler-rt/trunk compiler-rt >> $BASEDIR/log
+mkdir compiler-rt-build
+cd compiler-rt-build
+cmake -DCMAKE_INSTALL_PREFIX:PATH=$BASEDIR/install ../compiler-rt >> $BASEDIR/log
+make >> $BASEDIR/log
+make install >> $BASEDIR/log
