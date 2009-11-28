@@ -8,6 +8,61 @@
  */
 
 /*
+ 
+ Memory Management Design
+ 
+ Knowing when it is safe to free a point is rather tricky.  There is
+ a combination of two factors that must be considered -- first, the
+ scheduler, and second, user references.  In addition, the scheme
+ should be efficient and permit points to be freed as soon as possible.
+ 
+ The general idea of the scheme is that points go through a simple
+ state progression: UNSCHEDULED, SCHEDULED, OCCURRED, FREED.
+ 
+ The UNSCHEDULED state is when the point is first created.  Once
+ the interval_schedule() method is invoked, the point then becomes
+ SCHEDULED.  Once all predecessors in the interval graph OCCURRED,
+ the point becomes OCCURRED.  Once all references are released, the
+ point is FREED.
+ 
+ Before the OCCURRED state, the point P holds a "wait count" (WC) on 
+ each of its successors S.  In the OCCURRED state, this WC
+ is transformed into a "ref count" (RC), which potentially causes the
+ successor S to enter the OCCURRED state.  In the FREED state, 
+ the "ref count" is released (potentially freeing S).  
+ 
+ The transition from WC to RC that occurs when
+ entering the OCCURRED state is a bit subtle.  Furthermore, for 
+ optimization purposes, when possible we skip the OCCURRED state 
+ altogether.
+ 
+ Before the OCCURRED state, adjustments to the RC simply
+ affect the point locally.  The point does not hold a RC on its
+ successors -- it doesn't need to, because it holds a WC.
+ 
+ When a point P is about to occur, the arrive() method looks at P's RC:  
+ * If P's RC is 1, then the scheduler holds the only ref. on P.
+   In that case, we follow a streamlined path: the wait count of
+   all successors S of P is decremented, but their RC is unaffected.
+   This may cause some of S to arrive.  
+ * If P's RC is >1, then the scheduler must 
+   increment the RC of each successor before 
+   decrementing its WC.
+ Once the RC/WC of all successors have been adjusted, the scheduler
+ releases its ref on P.  
+ 
+ One side effect of this is that the correct effect of adding an edge
+ P->Q to the graph varies depending on the state of P and Q.
+ First, we note that Q must be in an UNSCHEDULED or SCHEDULED state.
+ Similarly, P must either:
+ * be in the OCCURRED state and the user holds a ref.  In this case,
+   we increment the RC of Q.  This increment is never propagated
+   to Q's successors because Q cannot yet be in the OCCURRED state.
+ * be in the UNSCHEDULED or SCHEDULED state.  In this case, we
+   increment the WC of Q, but not its RC.
+ */
+
+/*
  Some Notes on the Design:
  
  (1) Memory management.  Each point has both a ref and a wait count. 
@@ -27,7 +82,6 @@
  (3) Note that intervals are returned to the user with a "temporary" reference
  held by the scheduler.  If the user wishes to retain a reference after
  the interval is scheduled, they must use interval_retain.
- 
  */
 
 #include <stdlib.h>
@@ -53,18 +107,9 @@ static uint64_t live_points; // tracks number of live intervals when debugging
 
 #pragma mark Data Types and Simple Accessors
 
-#define RC_ROOT UINT32_MAX     // ref count on the root nodes
-#define WC_STARTED UINT32_MAX  // 
+#define WC_STARTED UINT64_MAX  // 
 #define EDGE_CHUNK_SIZE 3
 #define NULL_EPOINT ((epoint_t)0)
-#define REF_COUNT(v) ((uint32_t)((v) >> 32))
-#define WAIT_COUNT(v) ((uint32_t)(v))
-#define TO_REF_COUNT(n) (((uint64_t)(n)) << 32)
-#define TO_WAIT_COUNT(n) (((uint64_t)(n)))
-#define TO_COUNT(rc, wc) (TO_REF_COUNT(rc) | TO_WAIT_COUNT(wc))
-#define ONE_REF_COUNT    TO_REF_COUNT(1)
-#define ONE_WAIT_COUNT   TO_WAIT_COUNT(1)
-#define ONE_REF_AND_WAIT_COUNT (ONE_REF_COUNT | ONE_WAIT_COUNT)
 
 typedef int epoch_t;
 typedef intptr_t epoint_t;
@@ -81,37 +126,43 @@ struct guard_t {
 };
 
 struct point_t {
-	// Immutable fields:
+	/// Bound of this point.  Immutable.  Only \c NULL for end of root.
 	point_t *bound;
-	interval_task_t task;
+	
+	/// Points are structured into a tree based on their bounds.
+	/// This depth is the depth in the tree.
 	int depth;
 	
-	// Mutable state:
-	OSSpinLock lock;
-	edge_t *out_edges; /* guarded by lock */
-	epoch_t epoch;     /* guarded by lock */
+	/// Task to execute when scheduled (if any).  See \c task().
+	interval_task_t task;
 	
-	// Arrival and expected counts for each point:
-	//
-	//   The upper 32 bits ("wait") record the number of incoming
-	//   edges from points which have not yet arrived.  The lower 
-	//   32 bits ("ref. count") record the number of incoming edges
-	//   from points that have not yet been freed.  Modifications 
-	//   to these counts take place using atomic_add and atomic_sub
-	//   and the ONE_* constants #define'd above.  The only exception
-	//   is that once all points have arrived, the lock is acquired
-	//   and the wait count set (atomically) to WC_STARTED.  Note 
-	//   that the use of int64_t limits the in-degree of a point 
-	//   to 2^32.
-	uint64_t counts;
+	/// Lock used when performing guarded operations.
+	OSSpinLock lock;
+	
+	/// List of outgoing edges.  Guarded by \c lock.
+	edge_t *out_edges;
+	
+	/// Wait count: number of events which must occur
+	/// before we can execute.  The point cannot be freed
+	/// until this reaches zero.  Manipulated using
+	/// atomic instructions, not locks!
+	uint64_t wait_count;
+	
+	/// Ref count: number of times points has been retained
+	/// but not released.  Note that a point \c P in the
+	/// interval graph do \em not retain its successors
+	/// until \c P's \c ref_count become's 1.  Manipulated using
+	/// atomic instructions, not locks!
+	uint64_t ref_count;
 };
 
+/// Information about the currently executed interval.
 typedef struct current_interval_info_t current_interval_info_t;
 struct current_interval_info_t {
-	current_interval_info_t *next; // points to the previous current_interval_info
-	point_t *start;                // might be NULL (root interval, for example)
-	point_t *end;
-	edge_t *unscheduled_starts;
+	current_interval_info_t *next; ///< points to the previous current_interval_info
+	point_t *start;                ///< a point which \em happens before current task, may be \c NULL
+	point_t *end;                  ///< bound of current task
+	edge_t *unscheduled_starts;    ///< list of start points created but not yet scheduled
 };
 
 #pragma mark Manipulating Interval Tasks
@@ -143,7 +194,6 @@ static void task_dispatch(point_t *pnt, interval_task_t task) {
 		} else if(tag == TASK_BLOCK_TAG || tag == TASK_COPIED_BLOCK_TAG) {
 			// execute_interval will invoke task_execute (below) which 
 			// will release the ref.
-//			dispatch_async_f(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), pnt, interval_execute);		
 			interval_pool_enqueue(pnt);
 		}		
 	} else {
@@ -169,7 +219,7 @@ static void task_execute(point_t *pnt, interval_task_t task, point_t *arg) {
 
 #pragma mark Manipulating Edge Lists
 
-static void arrive(point_t *interval, uint64_t count);
+static void arrive(point_t *interval, uint64_t sub_waits, uint64_t add_refs);
 
 // Encodes in one pointer the interval and side to which an edge points.
 // If the synthetic bit is true, then this edge was not directly specified
@@ -181,21 +231,26 @@ static inline epoint_t epoint(point_t *point, bool synthetic) {
 	return epnt;
 }
 
+/// Extract point from \c pnt.
 static inline point_t *point_of_epoint(epoint_t pnt) {
 	intptr_t i = pnt & ~0x3;
 	return (point_t*)i;
 }
 
+/// Extract synthetic flag from \c pnt.
 static inline bool is_synthetic_epoint(epoint_t pnt) {
 	return (pnt & 0x1) != 0;
 }
 
-static inline void insert_edge(edge_t **list, epoint_t pnt) {
+/// Adds \c epnt to \c *list, possibly overwriting
+/// \c *list if allocation is necessary.  Generally executed
+/// while holding an appropriate lock on the owner of \c *list.
+static inline void insert_edge(edge_t **list, epoint_t epnt) {
 	edge_t *cur_edge = *list;
 	if(cur_edge != NULL) {
 		for(int i = 1; i < EDGE_CHUNK_SIZE; i++) {
 			if(cur_edge->to_points[i] == NULL_EPOINT) {
-				cur_edge->to_points[i] = pnt;
+				cur_edge->to_points[i] = epnt;
 				return;
 			}
 		}
@@ -203,36 +258,43 @@ static inline void insert_edge(edge_t **list, epoint_t pnt) {
 	
 	edge_t *new_edge;
 	*list = new_edge = (edge_t*)malloc(sizeof(edge_t));
-	new_edge->to_points[0] = pnt;
+	new_edge->to_points[0] = epnt;
 	for(int i = 1; i < EDGE_CHUNK_SIZE; i++)
 		new_edge->to_points[i] = NULL_EPOINT;
 	new_edge->next = cur_edge;
 }
 
-static void arrive_edge(edge_t *edge, uint64_t count) {
+/// Invokes \c arrive() on all points referenced by
+/// the list \c edge.
+static void arrive_edge(edge_t *edge, uint64_t sub_waits, uint64_t add_refs) {
 	if(edge) {
 		for(int i = 0; i < EDGE_CHUNK_SIZE; i++) {
 			epoint_t epnt = edge->to_points[i];
 			if(epnt == NULL_EPOINT)
 				break;
-			arrive(point_of_epoint(epnt), count);
+			arrive(point_of_epoint(epnt), sub_waits, add_refs);
 		}
 		
-		arrive_edge(edge->next, count);
+		arrive_edge(edge->next, sub_waits, add_refs);
 	}
 }
 
-static void free_edges(edge_t *edge) {
+/// Frees the list edge, optionally releasing references
+/// on the points contained within.
+static void free_edges(edge_t *edge, ///< List to free.
+					   bool release) ///< If true, release the points.
+{
 	if(edge) {
 		for(int i = 0; i < EDGE_CHUNK_SIZE; i++) {
 			epoint_t epnt = edge->to_points[i];
 			if(epnt == NULL_EPOINT)
 				break;
-			point_release(point_of_epoint(epnt));
+			if(release)
+				point_release(point_of_epoint(epnt));
 		}
 		
 		free(edge);
-		free_edges(edge->next);		
+		free_edges(edge->next, release);		
 	}
 }
 
@@ -284,7 +346,7 @@ static bool is_unscheduled(current_interval_info_t *info, point_t *tar) {
 
 #pragma mark Manipulating Points
 
-static point_t *point(point_t *bound, interval_task_t task, uint64_t counts)
+static point_t *point(point_t *bound, interval_task_t task, uint64_t wc, uint64_t rc)
 {
 	point_t *result = (point_t*)malloc(sizeof(point_t));
 	result->bound = bound;
@@ -292,9 +354,9 @@ static point_t *point(point_t *bound, interval_task_t task, uint64_t counts)
 	result->task = task;
 	result->lock = 0;
 	result->out_edges = NULL;
-	result->epoch = 0;
-	result->counts = counts;
-	debugf("%p = point(%p, %llx)", result, bound, counts);
+	result->wait_count = wc;
+	result->ref_count = rc;
+	debugf("%p = point(%p, wc=%llx, rc=%llx)", result, bound, wc, rc);
 	
 #   ifndef NDEBUG
 	atomic_add(&live_points, 1);
@@ -303,12 +365,16 @@ static point_t *point(point_t *bound, interval_task_t task, uint64_t counts)
 	return result;
 }
 
-static inline void point_add_count(point_t *point, uint64_t count) {
+static inline bool point_occurred(point_t *point) {
+	return point->wait_count == WC_STARTED;
+}
+
+static inline void point_add_wait_count(point_t *point, uint64_t count) {
 #   ifndef NDEBUG
 	uint64_t new_count = 
 #   endif
-	atomic_add(&point->counts, count);
-	debugf("%p point_add_count(%llx) new_count=%llx", point, count, new_count);
+	atomic_add(&point->wait_count, count);
+	debugf("%p point_add_wait_count(%llx) new_count=%llx", point, count, new_count);
 }
 
 static inline void point_lock(point_t *point) {
@@ -333,7 +399,7 @@ void interval_execute(point_t *start) {
 	// Note: start may be freed by task_execute!
 	
 	interval_schedule_unchecked(&info);	
-	arrive(end, ONE_WAIT_COUNT);
+	arrive(end, 1, 1);
 	pop_current_interval_info(&info);
 }
 
@@ -341,13 +407,22 @@ void interval_execute(point_t *start) {
 // count must not result in the point's ref. count becoming 0! This
 // should never happen in any case, as one ref. belongs to the scheduler,
 // and it is only released in this function once the wait count becomes 0.
-static void arrive(point_t *point, uint64_t count) {
-	uint64_t new_count = atomic_sub(&point->counts, count);
-	uint32_t new_wait_count = WAIT_COUNT(new_count);
+static void arrive(point_t *point, uint64_t sub_waits, uint64_t add_refs) 
+{
+	assert(sub_waits);
 	
-	debugf("%p arrive(%llx) new_count=%llx", point, count, new_count);
+	// Adjust Ref Count:
+	uint64_t ref_count;
+	if(add_refs) 
+		ref_count = atomic_add(&point->ref_count, add_refs);
+	else
+		ref_count = point->ref_count;
+
+	// Adjust Wait Count:
+	uint64_t wait_count = atomic_sub(&point->wait_count, sub_waits);
 	
-	if(new_wait_count == 0) {
+	debugf("%p arrive(%llx) new_count=%llx", point, sub_waits, new_count);	
+	if(wait_count == 0) {
 		edge_t notify;
 		notify.next = NULL;
 		notify.to_points[0] = NULL_EPOINT;
@@ -358,15 +433,26 @@ static void arrive(point_t *point, uint64_t count) {
 		// invoke arrive_edge(), other threads might add themselves into the
 		// out_edges array.  They would then be over-notified of our termination.
 		point_lock(point);
-		atomic_add(&point->counts, TO_WAIT_COUNT(WC_STARTED));		
-		if(point->out_edges)
-			notify = *point->out_edges;		
+		point->wait_count = WC_STARTED;
+		if(point->out_edges) notify = *point->out_edges;		
 		point_unlock(point);
 		
 		// Notify those coming after us and dispatch task (if any)
-		arrive_edge(&notify, ONE_WAIT_COUNT);
-		if(point->bound)
-			arrive(point->bound, ONE_WAIT_COUNT);
+		uint64_t add_refs;
+		if(ref_count == 1) {
+			// We hold the only ref on point.  Don't incr. RC of
+			// point's successors, instead just remove them.  We don't
+			// need a lock because no one else could be legally 
+			// inspecting point->out_edges without a ref.
+			add_refs = 0;
+			free_edges(point->out_edges, false);
+			point->out_edges = NULL;
+		} else {
+			// Someone else holds a ref on point.  
+			add_refs = 1;
+		}
+		arrive_edge(&notify, 1, add_refs);
+		if(point->bound) arrive(point->bound, 1, add_refs);
 		task_dispatch(point, point->task);
 	}
 }
@@ -424,7 +510,7 @@ void root_interval(interval_block_t blk)
 		interval_pool_init_latch(&latch);
 		
 		interval_task_t signalTask = task(&latch, TASK_LATCH_TAG);	
-		point_t *root_end = point(NULL, signalTask, TO_COUNT(1, 1));   // refs held by: task.  Waiting for us.
+		point_t *root_end = point(NULL, signalTask, 1, 1); // Wait: Us. Ref: Scheduler.
 		debugf("%p = root_end", root_end);
 		
 		// Start root block executing:
@@ -432,7 +518,7 @@ void root_interval(interval_block_t blk)
 		push_current_interval_info(&root_info, NULL, root_end);
 		blk(root_end);	
 		interval_schedule_unchecked(&root_info);
-		arrive(root_end, ONE_WAIT_COUNT);	
+		arrive(root_end, 1, 0);	
 		pop_current_interval_info(&root_info);
 		
 		// Wait until root_end occurs (it may already have done so):
@@ -483,9 +569,9 @@ interval_t interval(point_t *bound, interval_block_t blk)
 			if(currentStart != NULL)
 				startRefs++;
 			
-			point_add_count(bound, ONE_REF_AND_WAIT_COUNT);                  // from end point
-			point_t *end = point(bound, EMPTY_TASK, TO_COUNT(2, 2));         // refs held by: start, task.  Waiting on start, task.
-			point_t *start = point(end, startTask, TO_COUNT(startRefs, 1));  // refs held by: (See above).  Waiting to be scheduled.
+			point_add_wait_count(bound, 1);                        // from end point
+			point_t *end = point(bound, EMPTY_TASK, 2, 1);         // Wait: start, task. Ref: scheduler.
+			point_t *start = point(end, startTask, 1, startRefs);  // Wait: scheduler. Ref: (See above).
 			
 			if(currentStart) {				
 				point_lock(currentStart);
@@ -527,9 +613,9 @@ interval_err_t subinterval(interval_block_t blk)
 	// Create points:
 	//    Note that start occurs immediately.  Used in dyn. race det. to adjust bound, 
 	//    but maybe we could get rid of it.
-	point_add_count(info->end, ONE_REF_AND_WAIT_COUNT);            // from end point
-	point_t *end = point(info->end, signalTask, TO_COUNT(2, 1));   // refs held by: start, task.  Waiting on task.
-	point_t *start = point(end, blkTask, TO_COUNT(1, WC_STARTED)); // refs held by: task.
+	point_add_wait_count(info->end, 1);                  // from end point
+	point_t *end = point(info->end, signalTask, 1, 2);   // wait: task. refs: start, task.
+	point_t *start = point(end, blkTask, WC_STARTED, 1); // refs: task.
 	if(info->start)
 		interval_add_hb_unchecked(info->start, start, false);
 	
@@ -552,8 +638,6 @@ interval_err_t subinterval_f(task_func_t task, void *userdata)
 #pragma mark Scheduling Intervals
 static void interval_add_hb_unchecked(point_t *before, point_t *after, bool synthetic) {
 	debugf("%p->%p", before, after);	
-	
-	point_lock(before);
 	
 	// Note: we have to adjust 'after->counts' while holding 
 	// before lock to ensure that 'before' doesn't occur
@@ -581,12 +665,23 @@ static void interval_add_hb_unchecked(point_t *before, point_t *after, bool synt
 	//     Since we already have to check whether 'after' is an unscheduled
 	//     interval, it wouldn't add overhead to check though it would
 	//     require some code restructuring.
-	if(WAIT_COUNT(before->counts) == WC_STARTED)
-		point_add_count(after, ONE_REF_COUNT);
-	else
-		point_add_count(after, ONE_REF_AND_WAIT_COUNT);
 	
-	insert_edge(&before->out_edges, epoint(after, synthetic));
+	// Safety checks should ensure that after has not
+	// yet occurred:
+	assert(!point_occurred(after));
+	
+	point_lock(before);
+	
+	// If before has not yet started, after must wait for it.
+	// Otherwise, after need not wait, but when before is freed
+	// it will release a ref on after.  If before has 
+	// occurred, it can only still be live if user holds a ref on it.
+	if(!point_occurred(before))
+		point_add_wait_count(after, 1);
+	else 
+		point_retain(after);
+	
+	insert_edge(&before->out_edges, epoint(after, synthetic));	
 	
 	point_unlock(before);
 }
@@ -625,8 +720,8 @@ interval_err_t interval_lock(interval_t interval, guard_t *guard) {
 static void interval_schedule_unchecked(current_interval_info_t *info)
 {
 	if(info->unscheduled_starts) {
-		arrive_edge(info->unscheduled_starts, ONE_WAIT_COUNT);
-		free_edges(info->unscheduled_starts);
+		arrive_edge(info->unscheduled_starts, 1, 0);
+		free_edges(info->unscheduled_starts, false);
 		info->unscheduled_starts = NULL;	
 	}	
 }
@@ -806,7 +901,7 @@ guard_t *guard() {
 #pragma mark Memory Management
 point_t *point_retain(point_t *point) {
 	if(point)
-		atomic_add(&point->counts, ONE_REF_COUNT);
+		atomic_add(&point->ref_count, 1);
 	return point;
 }
 
@@ -823,12 +918,11 @@ interval_t interval_retain(interval_t interval) {
 }
 void point_release(point_t *point) {
 	if(point) {
-		assert(REF_COUNT(point->counts) > 0); 
-		uint64_t c = atomic_sub(&point->counts, ONE_REF_COUNT);
-		if(REF_COUNT(c) == 0) {
+		uint64_t rc = atomic_sub(&point->ref_count, 1);
+		if(rc == 0) {
 			assert(WAIT_COUNT(c) == WC_STARTED);
 			debugf("%p: freed", point);
-			free_edges(point->out_edges);
+			free_edges(point->out_edges, true);
 			point_release(point->bound);
 			// Note: point->task is released by task_execute
 			free(point);
