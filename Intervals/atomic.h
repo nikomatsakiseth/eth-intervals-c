@@ -38,7 +38,7 @@ static inline void OSSpinLockLock(OSSpinLock *lock)
   do {
     while(*lock == 1)
       ;
-  } while(!__sync_lock_test_and_set(lock, 1));
+  } while(__sync_lock_test_and_set(lock, 1));
 }
 
 static inline void OSSpinLockUnlock(OSSpinLock *lock)
