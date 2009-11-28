@@ -9,6 +9,8 @@
 
 #ifndef INTERVALS_USE_LIB_DISPATCH
 
+#include <stdint.h>
+#include <stdio.h>
 #include <pthread.h>
 #include <stdlib.h>
 #include <limits.h>
@@ -296,7 +298,7 @@ static point_t *deque_owner_take(deque_t *deque)
 	deque_index_t last_tail = tail - 1;
 	unsigned last_index = deque_index(mask, last_tail);
 	
-	point_t *result = atomic_xchg(&deque->work_items[last_index], NULL);
+	point_t *result = atomic_xchg_ptr(&deque->work_items[last_index], NULL);
 
 	// If we got back NULL, then it was stolen.  Update our view
 	// of the head.
@@ -319,7 +321,7 @@ static point_t *deque_steal(deque_t *deque)
 	deque_index_t head = deque->thief_head;
 	unsigned index = deque_index(mask, head);
 	
-	point_t *result = atomic_xchg(&deque->work_items[index], NULL);
+	point_t *result = atomic_xchg_ptr(&deque->work_items[index], NULL);
 	
 	if(result != NULL)
 		deque->thief_head = head + 1;	
