@@ -421,7 +421,7 @@ static void arrive(point_t *point, uint64_t sub_waits, uint64_t add_refs)
 	// Adjust Wait Count:
 	uint64_t wait_count = atomic_sub(&point->wait_count, sub_waits);
 	
-	debugf("%p arrive(%llx) new_count=%llx", point, sub_waits, new_count);	
+	debugf("%p arrive(%llx) wait_count=%llx", point, sub_waits, wait_count);	
 	if(wait_count == 0) {
 		edge_t notify;
 		notify.next = NULL;
@@ -920,7 +920,6 @@ void point_release(point_t *point) {
 	if(point) {
 		uint64_t rc = atomic_sub(&point->ref_count, 1);
 		if(rc == 0) {
-			assert(WAIT_COUNT(c) == WC_STARTED);
 			debugf("%p: freed", point);
 			free_edges(point->out_edges, true);
 			point_release(point->bound);
@@ -931,7 +930,7 @@ void point_release(point_t *point) {
 			atomic_sub(&live_points, 1);
 #   endif
 		} else {
-			debugf("%p: point_release c=%llx", point, c);
+			debugf("%p: point_release rc=%llx", point, rc);
 		}			
 	}
 }
