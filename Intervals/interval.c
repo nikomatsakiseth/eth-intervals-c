@@ -62,28 +62,6 @@
    increment the WC of Q, but not its RC.
  */
 
-/*
- Some Notes on the Design:
- 
- (1) Memory management.  Each point has both a ref and a wait count. 
- The point is freed when its ref count reaches zero.  The point
- "occurs" when its wait count reaches zero.  Because the point cannot
- be freed until it has occurred, the ref count should always be
- >= the wait count.  Generally, anyone for whom the point is waiting
- should hold a reference to the point.  In addition, there is always
- one ref count for the "scheduler": this reference is released when
- the point "occurs" and its task is executed.
- 
- (2) The above scheme implies that creating a new edge from one point
- to another always requires that the ref count of the target point
- be incremented.  The wait count need only be incremented if the source
- point has not yet occurred.
- 
- (3) Note that intervals are returned to the user with a "temporary" reference
- held by the scheduler.  If the user wishes to retain a reference after
- the interval is scheduled, they must use interval_retain.
- */
-
 #include <stdlib.h>
 #include <stdarg.h>
 #include <assert.h>
@@ -421,7 +399,7 @@ static void arrive(point_t *point, uint64_t sub_waits, uint64_t add_refs)
 	// Adjust Wait Count:
 	uint64_t wait_count = atomic_sub(&point->wait_count, sub_waits);
 	
-	debugf("%p arrive(%llx) wait_count=%llx", point, sub_waits, wait_count);	
+	debugf("%p arrive(%lld,%lld) wait_count=%llx", point, sub_waits, add_refs, wait_count);
 	if(wait_count == 0) {
 		edge_t notify;
 		notify.next = NULL;
@@ -668,7 +646,10 @@ static void interval_add_hb_unchecked(point_t *before, point_t *after, bool synt
 	
 	// Safety checks should ensure that after has not
 	// yet occurred:
-	assert(!point_occurred(after));
+    // -- This would be safe to assert, but for optimized
+    // -- code in subinterval() that creates a start point
+    // -- with WC set to WC_STARTED!
+	// assert(!point_occurred(after));
 	
 	point_lock(before);
 	
