@@ -7,6 +7,7 @@
  *  Please see the file LICENSE for distribution and licensing details.
  */
 
+#include <stdint.h>
 #include <stdlib.h>
 #include <time.h>
 #include <math.h>

@@ -18,6 +18,13 @@
 #define atomic_add(v, a) __sync_add_and_fetch(v, a)
 #define atomic_sub(v, a) __sync_sub_and_fetch(v, a)
 #define atomic_rel_lock(v) __sync_lock_release(v)
+#define memory_barrier() __sync_synchronize()
+
+#ifdef APPLE
+#  define thread_yield pthread_yield_np
+#else
+#  define thread_yield sched_yield
+#endif
 
 #ifdef __APPLE__
 #  include <libkern/OSAtomic.h>

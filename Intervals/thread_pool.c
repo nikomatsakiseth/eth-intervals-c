@@ -275,7 +275,7 @@ static void deque_owner_put(deque_t *deque, point_t *work_item)
 		unsigned index = deque_index(mask, tail);
 		
 		// ensure that all writes are published before we make the pointer work_item available to others
-		OSMemoryBarrier(); 
+		memory_barrier(); 
 		
 		deque->work_items[index] = work_item;
 		deque->owner_tail = tail + 1;
@@ -405,12 +405,12 @@ static void worker_add_to_all_worker_list(interval_worker_t *worker)
 		interval_worker_t *last = first->prev_all;
 		worker->next_all = first;
 		worker->prev_all = last;
-		OSMemoryBarrier();
+		memory_barrier();
 		last->next_all = worker;
 		first->prev_all = worker;
 	}
 	
-	OSMemoryBarrier();
+	memory_barrier();
 	pool->first_worker = worker;
 	
 	pthread_mutex_unlock(&pool->lock);	
@@ -539,7 +539,7 @@ static bool worker_do_work(interval_worker_t *worker, int steal_attempts)
 	while(steal_attempts--) {
 		if((work_item = worker_steak_work(worker)) != NULL)
 			goto found_work;
-		pthread_yield_np();
+		thread_yield();
 	}
 	
 	return false;
@@ -729,7 +729,7 @@ void interval_pool_init_latch(interval_pool_latch_t *latch)
 /// continue. 
 void interval_pool_signal_latch(interval_pool_latch_t *latch)
 {
-	OSMemoryBarrier();
+	memory_barrier();
 	*latch = 1;
 }
 
