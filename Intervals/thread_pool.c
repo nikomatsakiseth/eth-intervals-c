@@ -7,6 +7,8 @@
  *  Please see the file LICENSE for distribution and licensing details.
  */
 
+#ifndef INTERVALS_USE_LIB_DISPATCH
+
 #include <pthread.h>
 #include <stdlib.h>
 #include <limits.h>
@@ -14,6 +16,8 @@
 #include "thread_pool.h"
 #include "internal.h"
 #include "atomic.h"
+
+//#define PROFILE
 
 #pragma mark Miscellaneous Configuration
 
@@ -54,124 +58,162 @@ static void llstack_free(llstack_t **stack) {
 
 #pragma mark Data Types and Constants
 
+/// Number of bits to shift logical indices
+/// so as to insert padding between the items in an array.
+/// This padding can help to eliminate false sharing at
+/// the cost of memory.
 #define DEQUE_PAD 0
+
+/// Number of empty slots to leave at the beginning
+/// of the array.
 #define DEQUE_OFFSET 0
 
+typedef struct interval_pool_t interval_pool_t;
 typedef struct interval_worker_t interval_worker_t;
-typedef struct point_t interval_work_item_t;
 typedef struct deque_t deque_t;
 
 typedef unsigned deque_index_t;
 #define DEQUE_INDEX_MAX UINT_MAX
 struct deque_t {	
-	interval_work_item_t **work_items; // Logical ength is always a power of two.
-	deque_index_t work_items_mask;     // = logical length of array - 1.
-	deque_index_t owner_head;          // May lag behind thief_head.
-	deque_index_t owner_tail;          // Logical index; always correct.
-	deque_index_t thief_head;
-	OSSpinLock lock;                   // Should probably not be a spin-lock!
+	point_t **work_items;            ///< Physical array for enqueued work.
+	deque_index_t work_items_mask;   ///< Logical length of array - 1.
+	deque_index_t owner_head;        ///< Logical index of the last item the owner saw get stolen.
+	deque_index_t owner_tail;        ///< Logical index of next item to add.
+	deque_index_t thief_head;        ///< Logical index of next item to steal.
+	OSSpinLock lock;                 ///< Lock used when resizing the deque or stealing.
 };
 
 struct interval_worker_t {
+	/// id of the thread which is running this worker
 	pthread_t thread;
 	
+	/// pool to which the worker belongs
 	interval_pool_t *pool;
 	
-	// Per-worker lock.  Held under the following conditions:
-	// (1) When stealing.
-	// (2) When going idle (but not while idle, in that 
-	//     case we are waiting on cond, see below).
-	// This lock cannot be held while acquiring the pool lock.
+	/// Per-worker lock.  Held under the following conditions:
+	/// - When stealing.
+	/// - When going idle (but not while idle, in that 
+	///   case we are waiting on cond, see below).
+	/// This lock cannot be held while acquiring the pool lock.
+	/// Acquire with \c worker_lock() and \c worker_unlock().
 	pthread_mutex_t lock;
 
-	// We block on this condition when idle.  This allows
-	// us to be re-awoken.
+	/// We block on this condition when idle.  This allows
+	/// us to be re-awoken.
 	pthread_cond_t cond;
 
+	/// The deque owned by this worker.
 	deque_t deque;
 	
-	// Links for the list of all workers.  It is
-	// permitted to walk the "all workers" list in the
-	// forward direction without locks, but editing
-	// should occur under pool->lock.
+	/// Links for the list of all workers.  It is
+	/// permitted to walk the "all workers" list in the
+	/// forward direction without locks, but editing
+	/// should occur under pool->lock.
 	interval_worker_t *prev_all, *next_all;
 	
-	// Links for the list of idle workers.  Manipulated
-	// and walked under pool->lock.
+	/// Links for the list of idle workers.  Manipulated
+	/// and walked under pool->lock.
 	interval_worker_t *prev_idle, *next_idle;
 	
-	// Links for the list of removed workers where worker
-	// structures go before being freed.
+	/// Links for the list of removed workers where worker
+	/// structures go before being freed.
 	interval_worker_t *next_removed;
 };
 
 struct interval_pool_t {
-	// lock for the pool.  Held while manipulating pool-level structures.
+	/// lock for the pool.  All fields in the pool
+	/// may only be modified while holding this lock!
 	pthread_mutex_t lock;
 	
-	// condition: the 'worker thread removal' thread blocks on this condition.
-	// when enough removed workers accumulate, he walks and frees them.
-	// before doing so he acquires the lock on all active workers.
+	/// condition: the 'worker thread removal' thread blocks on this condition.
+	/// when enough removed workers accumulate, he walks and frees them.
+	/// before doing so he acquires the lock on all active workers.
 	pthread_cond_t cond;
 	
-	// normally false until shutdown is initiated.
+	/// normally false until shutdown is initiated.
 	bool shutdown;
 	
+	/// The id of the thread which frees removed workers.
 	pthread_t cleanup_thread;
 	
+	/// Circular, doubly-linked list of all active workers.
+	/// May be read without \c lock, but not written!
 	interval_worker_t *first_worker;
+
+	/// Circular, doubly-linked list of all active workers.
 	interval_worker_t *first_idle_worker;
+	
+	/// Non-circular, singly-linked list of workers which were
+	/// removed from the pool but whose resources were not
+	/// yet freed.  
 	interval_worker_t *first_removed_worker;
 };
 
 #pragma mark Deque Operations
 
+/// Returns the index into an array corresponding to the item
+/// at position \c pos.  \c mask is the mask associated with
+/// the array, which indicates the array's physical length.
 static inline size_t deque_index(deque_index_t mask, deque_index_t pos) 
 {
 	return (size_t)(((pos & mask) << DEQUE_PAD) + DEQUE_OFFSET);
 }
 
+/// Returns the number of items to allocate for an array
+/// of a given logical length.  The logical length is the number
+/// of items that can be stored into the array.  The return value
+/// may be bigger than the logical length depending on the
+/// \c DEQUE_PAD and \c DEQUE_OFFSET constants.
 static inline size_t deque_alloc_size(deque_index_t logical_size)
 {
 	return (size_t)((logical_size << DEQUE_PAD) + DEQUE_OFFSET);
 }
 
+/// Returns the index mask corresponding to the given logical
+/// length.  
+/// \see deque_alloc_size
 static inline deque_index_t deque_mask(deque_index_t logical_len)
 {
 	return logical_len - 1;
 }
 
+/// Inverse of \c deque_mask()
 static inline deque_index_t deque_logical_len(deque_index_t mask)
 {
 	return mask + 1;
 }
 
+/// Initializes \c deque.  
 static void deque_init(deque_t *deque)
 {
 	const deque_index_t llen = (1 << 10);
 	size_t size = deque_alloc_size(llen);
-	deque->work_items = (interval_work_item_t**)calloc(size, sizeof(interval_work_item_t*));
-	memset(deque->work_items, 0, size * sizeof(interval_work_item_t*));
+	deque->work_items = (point_t**)calloc(size, sizeof(point_t*));
+	memset(deque->work_items, 0, size * sizeof(point_t*));
 	deque->work_items_mask = deque_mask(llen);
 	deque->owner_head = deque->owner_tail = deque->thief_head = 0;
 	deque->lock = 0;
 }
 
+/// Frees all memory associated with \c deque.
 static void deque_free(deque_t *deque)
 {
 	free(deque->work_items);
 }
 
+/// Helper for \c deque_expand().  Allocates a new
+/// array for \c deque of size \c new_llen and copies
+/// the (live) contents of the old array over.
 static void deque_copy_array(deque_t *deque, deque_index_t new_llen)
 {	
-	interval_work_item_t **old_work_items = deque->work_items;
+	point_t **old_work_items = deque->work_items;
 	deque_index_t old_mask = deque->work_items_mask;
 	
 	size_t new_size = deque_alloc_size(new_llen);
 	deque_index_t new_mask = deque_mask(new_llen);
-	interval_work_item_t **new_work_items = (interval_work_item_t**)calloc(new_size, sizeof(interval_work_item_t*));
+	point_t **new_work_items = (point_t**)calloc(new_size, sizeof(point_t*));
 	for(deque_index_t i = deque->owner_head, c = deque->owner_tail; i < c; i++) {
-		interval_work_item_t *item = old_work_items[deque_index(old_mask, i)];
+		point_t *item = old_work_items[deque_index(old_mask, i)];
 		new_work_items[deque_index(new_mask, i)] = item;
 	}
 	
@@ -182,6 +224,9 @@ static void deque_copy_array(deque_t *deque, deque_index_t new_llen)
 	deque->owner_head = deque->thief_head = 0;
 }
 
+/// Grows the deque if necessary.  Invoked when
+/// the \c deque_owner_put() finds that the deque
+/// is too large, or that the tail index would roll over.
 static void deque_expand(deque_t *deque) 
 {
 	OSSpinLockLock(&deque->lock);
@@ -210,7 +255,9 @@ static void deque_expand(deque_t *deque)
 	OSSpinLockUnlock(&deque->lock);
 }
 
-static void deque_owner_put(deque_t *deque, interval_work_item_t *work_item)
+/// Adds a point to the \c deque.  Only
+/// the owner of \c deque may execute this routine.
+static void deque_owner_put(deque_t *deque, point_t *work_item)
 {
 	for(;;) {
 		deque_index_t mask = deque->work_items_mask;
@@ -234,7 +281,10 @@ static void deque_owner_put(deque_t *deque, interval_work_item_t *work_item)
 	} 
 }
 
-static interval_work_item_t *deque_owner_take(deque_t *deque)
+/// Tries to pop a point from the top of the \c deque,
+/// returning \c NULL upon failure.  Only
+/// the owner of \c deque may execute this routine.
+static point_t *deque_owner_take(deque_t *deque)
 {
 	deque_index_t mask = deque->work_items_mask;
 	deque_index_t head = deque->owner_head;
@@ -246,7 +296,7 @@ static interval_work_item_t *deque_owner_take(deque_t *deque)
 	deque_index_t last_tail = tail - 1;
 	unsigned last_index = deque_index(mask, last_tail);
 	
-	interval_work_item_t *result = atomic_xchg(&deque->work_items[last_index], NULL);
+	point_t *result = atomic_xchg(&deque->work_items[last_index], NULL);
 
 	// If we got back NULL, then it was stolen.  Update our view
 	// of the head.
@@ -260,16 +310,16 @@ static interval_work_item_t *deque_owner_take(deque_t *deque)
 	return result;
 }
 
-static interval_work_item_t *deque_steal(deque_t *deque)
+/// Tries to steal a point from the bottom of the \c deque,
+/// returning \c NULL upon failure.
+static point_t *deque_steal(deque_t *deque)
 {
-	if(!OSSpinLockTry(&deque->lock))
-		return NULL;
-
+	OSSpinLockLock(&deque->lock);	
 	deque_index_t mask = deque->work_items_mask;
 	deque_index_t head = deque->thief_head;
 	unsigned index = deque_index(mask, head);
 	
-	interval_work_item_t *result = atomic_xchg(&deque->work_items[index], NULL);
+	point_t *result = atomic_xchg(&deque->work_items[index], NULL);
 	
 	if(result != NULL)
 		deque->thief_head = head + 1;	
@@ -288,23 +338,31 @@ static void init_worker_key_helper()
 	pthread_key_create(&worker_key, NULL);
 }
 
+/// Initializes the pthread local key for the current worker.
+/// Safe to invoke multiple times.
 static void init_worker_key() 
 {
 	pthread_once(&worker_key_init, init_worker_key_helper);
 }
 
+/// Returns the current worker associated with this thread (if any).
+/// Must have invoked \c init_worker_key() first.
 static interval_worker_t *current_worker() 
-{ // Must have invoked init_current_interval_key() first
+{
 	return (interval_worker_t*)pthread_getspecific(worker_key);
 }
 
+/// Sets the current worker associated with this thread.
+/// Must have invoked \c init_worker_key() first.
 static void set_current_worker(interval_worker_t *worker) 
-{ // Must have invoked init_current_interval_key() first
+{
 	pthread_setspecific(worker_key, worker);
 }
 
 #pragma mark Interval Worker
 
+/// Adds the worker to the pool's list of all workers.
+/// Other threads may be concurrently walking the list of all workers.
 static void worker_add_to_all_worker_list(interval_worker_t *worker)
 {
 	interval_pool_t *pool = worker->pool;
@@ -356,6 +414,11 @@ static void worker_add_to_all_worker_list(interval_worker_t *worker)
 	pthread_mutex_unlock(&pool->lock);	
 }
 
+/// Removes the worker from the pool's list of all workers.
+/// The worker is also placed onto the pool's list of removed
+/// workers to be freed when convenient.  It is not
+/// safe to free the worker immediately because other threads
+/// may be concurrently walking the list of all workers.
 static void worker_remove_from_all_worker_list(interval_worker_t *worker)
 {
 	interval_pool_t *pool = worker->pool;
@@ -392,6 +455,8 @@ static void worker_remove_from_all_worker_list(interval_worker_t *worker)
 	
 }
 
+/// Creates a new worker associated with \c pool
+/// and inserts it into the pool's list of workers.
 static interval_worker_t *worker_create(interval_pool_t *pool) 
 {
 	interval_worker_t *worker = (interval_worker_t*)malloc(sizeof(interval_worker_t));	
@@ -406,6 +471,7 @@ static interval_worker_t *worker_create(interval_pool_t *pool)
 	return worker;
 }
 
+/// Frees all memory associated with worker, making no effort to unlink it.
 static void worker_free(interval_worker_t *worker)
 {
 	deque_free(&worker->deque);
@@ -414,16 +480,25 @@ static void worker_free(interval_worker_t *worker)
 	free(worker);
 }
 
-static void worker_main(interval_worker_t *worker)
-{
-	
+/// Acquires the lock for \c worker, preventing it from
+/// stealing.
+static inline void worker_lock(interval_worker_t *worker)
+{	
+	pthread_mutex_lock(&worker->lock);
 }
 
-static interval_work_item_t *worker_steak_work(interval_worker_t *worker)
+/// Releases the lock for \c worker, permitting it to steal.
+static inline void worker_unlock(interval_worker_t *worker)
+{	
+	pthread_mutex_unlock(&worker->lock);
+}
+
+/// Tries to steal work, returning the stolen point (if any)
+static point_t *worker_steak_work(interval_worker_t *worker)
 {
-	interval_work_item_t *stolen_item = NULL;
+	point_t *stolen_item = NULL;
 	
-	pthread_mutex_lock(&worker->lock);
+	worker_lock(worker);
 	
 	for(interval_worker_t *victim = worker->next_all; 
 		victim != worker; 
@@ -435,20 +510,24 @@ static interval_work_item_t *worker_steak_work(interval_worker_t *worker)
 		}
 	}	
 	
-	pthread_mutex_unlock(&worker->lock);
-	
+	worker_unlock(worker);
+
 	return stolen_item;
 }
 
-static inline void worker_enqueue(interval_worker_t *worker, interval_work_item_t *work_item)
+/// Adds \c work_item to the worker's deque
+static inline void worker_enqueue(interval_worker_t *worker, point_t *work_item)
 {
 	debugf("enqueued %p", work_item);
 	deque_owner_put(&worker->deque, work_item);
 }
 
+/// Tries to execute a start point.  If no point is found locally,
+/// makes up to \c steal_attempts to steal one.  
+/// \returns true if it was able to find work to do
 static bool worker_do_work(interval_worker_t *worker, int steal_attempts)
 {
-	interval_work_item_t *work_item;
+	point_t *work_item;
 	
 	if((work_item = deque_owner_take(&worker->deque)) != NULL) {
 		debugf("took %p", work_item);
@@ -468,13 +547,15 @@ found_work:
 	return true;
 }
 
-// Pthread start point for a new worker thread:
+/// Pthread start point for a new worker thread.
+/// Simply tries to do work until pool is shutdown.
 static void *worker_thread(void *_worker)
 {
 	interval_worker_t *worker = (interval_worker_t*)_worker;
 	interval_pool_t *pool = worker->pool;
 	set_current_worker(worker);
 	
+	// TODO This should sleep if no work is around.
 	while(!pool->shutdown) {
 		worker_do_work(worker, 22);
 	}
@@ -482,19 +563,24 @@ static void *worker_thread(void *_worker)
 	return NULL;
 }
 
+/// Starts a new thread for \c worker, storing the
+/// thread id in the field \c thread.
 static inline void worker_start(interval_worker_t *worker)
 {
 	pthread_create(&worker->thread, NULL, worker_thread, worker);
 }
 
+/// Joins the thread for \c worker, unless it is the current
+/// thread.
 static inline void worker_join(interval_worker_t *worker)
 {
-	pthread_join(worker->thread, NULL);
+	if(!pthread_equal(pthread_self(), worker->thread))		
+		pthread_join(worker->thread, NULL);
 }
 
-// Called when this worker is already doing something,
-// but he's idling for a signal and wants to do some work.
-// Returns true if it managed to do a little work.
+/// Called when this worker is already doing something,
+/// but he's idling for a signal and wants to do some work.
+/// Returns true if it managed to do a little work.
 static bool worker_recurse(interval_worker_t *worker)
 {
 	debugf("worker_recurse: %p", worker);
@@ -503,18 +589,29 @@ static bool worker_recurse(interval_worker_t *worker)
 
 #pragma mark Interval Pool
 
-void interval_pool_iter_all_workers(interval_pool_t *pool, void (^blk)(interval_worker_t *worker)) {
-	if(pool->first_worker) {
-		blk(pool->first_worker);
-		for(interval_worker_t *worker = pool->first_worker->next_all;
-			worker != pool->first_worker;
-			worker = worker->next_all)
+typedef void (*interval_worker_func)(interval_worker_t *worker);
+
+/// Iterates over all workers in \c pool and invokes \c func on each one.
+/// It is permitted to \c func to free the workers but not to manipulate
+/// the linked list.
+void interval_pool_iter_all_workers(interval_pool_t *pool, interval_worker_func func)
+{
+	interval_worker_t *first_worker = pool->first_worker;
+	if(first_worker) {
+		interval_worker_t *worker = first_worker;
+		interval_worker_t *next_worker = worker->next_all;
+		
+		func(worker); // note: this might free worker! hence we read next_all first
+		while((worker = next_worker) != first_worker)
 		{
-			blk(worker);
+			next_worker = worker->next_all;
+			func(worker);
 		}
 	}
 }
 
+/// Helper for \c interval_pool_clean_thread().  Frees the
+/// linked list of removed workers starting at \c removed.
 static void interval_pool_free_removed_workers(interval_worker_t *removed) 
 {
 	if(removed) {
@@ -523,6 +620,8 @@ static void interval_pool_free_removed_workers(interval_worker_t *removed)
 	}
 }
 
+/// The cleanup thread runs asynchronously to the workers and
+/// frees those who were removed from the list of all workers.
 static void *interval_pool_clean_thread(void *_pool)
 {
 	interval_pool_t *pool = (interval_pool_t*)_pool;
@@ -535,15 +634,9 @@ static void *interval_pool_clean_thread(void *_pool)
 			
 			// Acquire locks on all worker threads to prevent
 			// them from simultaneously stealing!
-			interval_pool_iter_all_workers(pool, ^(interval_worker_t *worker) {
-				pthread_mutex_lock(&worker->lock);
-			});
-
-			interval_pool_free_removed_workers(removed_workers);
-			
-			interval_pool_iter_all_workers(pool, ^(interval_worker_t *worker) {
-				pthread_mutex_unlock(&worker->lock);
-			});
+			interval_pool_iter_all_workers(pool, worker_lock);
+			interval_pool_free_removed_workers(removed_workers);			
+			interval_pool_iter_all_workers(pool, worker_unlock);
 			
 		} else {
 			pthread_cond_wait(&pool->cond, &pool->lock);
@@ -556,6 +649,7 @@ static void *interval_pool_clean_thread(void *_pool)
 }
 
 
+/// Create a new interval pool.
 static interval_pool_t *interval_pool_create()
 {
 	interval_pool_t *pool = (interval_pool_t*)malloc(sizeof(interval_pool_t));
@@ -567,6 +661,7 @@ static interval_pool_t *interval_pool_create()
 	return pool;
 }
 
+/// Destroy an interval pool, joining and freeing all worker threads.
 void interval_pool_destroy(interval_pool_t *pool)
 {
 	// First bring all workers (and cleanup thread) into
@@ -576,15 +671,8 @@ void interval_pool_destroy(interval_pool_t *pool)
 	pthread_mutex_unlock(&pool->lock);
 	pthread_cond_broadcast(&pool->cond);
 
-	pthread_t self = pthread_self();
-	interval_pool_iter_all_workers(pool, ^(interval_worker_t *worker) {
-		if(!pthread_equal(self, worker->thread))		
-			worker_join(worker);
-	});
-	
-	interval_pool_iter_all_workers(pool, ^(interval_worker_t *worker) {
-		worker_free(worker);
-	});
+	interval_pool_iter_all_workers(pool, worker_join);
+	interval_pool_iter_all_workers(pool, worker_free);
 
 	pthread_join(pool->cleanup_thread, NULL);
 	pthread_cond_destroy(&pool->cond);
@@ -592,6 +680,8 @@ void interval_pool_destroy(interval_pool_t *pool)
 	free(pool);
 }
 
+/// Creates an interval pool, executes \c blk, and then releases
+/// the pool.
 void interval_pool_run(int workers, void (^blk)(interval_pool_t *pool))
 {
 	init_worker_key();
@@ -618,23 +708,30 @@ void interval_pool_run(int workers, void (^blk)(interval_pool_t *pool))
 	interval_pool_destroy(pool);
 }
 
+/// Adds \c start_point to the list of pending work
+/// for the current pool.  Must be run from within
+/// \c interval_pool_run().
 void interval_pool_enqueue(point_t *start_point)
 {
 	interval_worker_t *worker = current_worker();
 	worker_enqueue(worker, start_point);
 }
 
+/// Initializes a latch so it can later be signalled.
 void interval_pool_init_latch(interval_pool_latch_t *latch)
 {
 	*latch = 0;
 }
 
+/// Signals a latch so that whoever is waiting for it can
+/// continue. 
 void interval_pool_signal_latch(interval_pool_latch_t *latch)
 {
 	OSMemoryBarrier();
 	*latch = 1;
 }
 
+/// Waits for a latch to be signalled.
 void interval_pool_wait_latch(interval_pool_latch_t *latch)
 {
 	interval_worker_t *worker = current_worker();
@@ -643,3 +740,5 @@ void interval_pool_wait_latch(interval_pool_latch_t *latch)
 	while(!*latch)
 		worker_recurse(worker);
 }
+
+#endif

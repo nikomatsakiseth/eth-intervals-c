@@ -7,7 +7,6 @@
  *
  */
 
-#include "test.h"
 #include <stdlib.h>
 #include <limits.h>
 #include "interval.h"

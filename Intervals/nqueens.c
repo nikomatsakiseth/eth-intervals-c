@@ -12,9 +12,12 @@
 #include <math.h>
 #include <stdio.h>
 #include <assert.h>
+#include <pthread.h>
 #include "interval.h"
 #include "atomic.h"
 #include "internal.h"
+
+FILE *dump;
 
 typedef struct board_t board_t;
 struct board_t {
@@ -92,6 +95,16 @@ void position_list_free(position_list_t *pos) {
 	free(pos);
 }
 
+void position_list_dump(position_list_t *pos) {
+	if(dump) {
+		fprintf(dump, "%20p position:", pthread_self());
+		for(position_list_t *cur = pos; cur != NULL; cur = cur->previous) {
+			fprintf(dump, " <%d,%d>", cur->row, cur->col);
+		}
+		fprintf(dump, "\n");
+	}
+}
+
 board_t *position_list_to_board(position_list_t *position, int problem_size) {
 	board_t *result = board_create(problem_size);
 		
@@ -144,47 +157,46 @@ void solve_sequentially(board_t *board,
 	} 
 }
 
-void solve_one_level(point_t *cur_end,
-					 position_list_t *start_position, // will be freed 
+void solve_one_level(position_list_t *start_position, // will be freed 
 					 int problem_size, 
 					 int cutoff_level, 
 					 int *solution_count)
 {
-	int current_row = start_position->row + 1;
-	debugf("solve_one_level(%p=<%d,%d>, %d, %d)", start_position, start_position->row, start_position->col,
-		   problem_size, cutoff_level);
-	assert(current_row <= problem_size);
-	if(current_row < problem_size) {
-		if(current_row == cutoff_level) {
-			board_t *board = position_list_to_board(start_position, problem_size);
-			solve_sequentially(board, current_row, solution_count);
-			board_free(board);
-		} else {
-			position_list_t **valid_moves = generate_valid_modes(start_position, problem_size);
-			for(int i = 0; valid_moves[i]; i++) {
-				position_list_t *move = valid_moves[i];
-				debugf("%p led to move %p=<%d,%d>", start_position, move, move->row, move->col);
-				
-				interval(cur_end, ^(point_t *solve_end) {
-					solve_one_level(solve_end, move, problem_size, cutoff_level, solution_count);					
-				});
+	subinterval(^(point_t *sub_end) {
+		int current_row = start_position->row + 1;
+		debugf("solve_one_level(%p=<%d,%d>, %d, %d)", start_position, start_position->row, start_position->col,
+			   problem_size, cutoff_level);
+		assert(current_row <= problem_size);
+		if(current_row < problem_size) {
+			if(current_row == cutoff_level) {
+				board_t *board = position_list_to_board(start_position, problem_size);
+				position_list_dump(start_position);
+				solve_sequentially(board, current_row, solution_count);
+				board_free(board);
+			} else {
+				position_list_t **valid_moves = generate_valid_modes(start_position, problem_size);
+				for(int i = 0; valid_moves[i]; i++) {
+					position_list_t *move = valid_moves[i];
+					debugf("%p led to move %p=<%d,%d>", start_position, move, move->row, move->col);
+					
+					interval(sub_end, ^(point_t *_) {
+						solve_one_level(move, problem_size, cutoff_level, solution_count);					
+					});
+				}
+				free(valid_moves);
 			}
-			free(valid_moves);
+		} else {
+			// we've reached the last possible level, which means we have a solution
+			atomic_add(solution_count, 1);
 		}
-	} else {
-		// we've reached the last possible level, which means we have a solution
-		atomic_add(solution_count, 1);
-	}
-	
-	// once this current interval has finished, arrange to free start_position
-	interval_t free = interval(point_bound(cur_end), ^(point_t *_) {
-		position_list_free(start_position);
 	});
-	interval_add_hb(cur_end, free.start);
+	
+	position_list_free(start_position);
 }
 
 void solve_in_parallel(int problem_size, int cutoff_level, int *solution_count)
 {
+	assert(cutoff_level > 0);
 	if(cutoff_level == 0) {
 		board_t *board = board_create(problem_size);
 		solve_sequentially(board, 0, solution_count);
@@ -193,8 +205,8 @@ void solve_in_parallel(int problem_size, int cutoff_level, int *solution_count)
 		for(int i = 0; i < problem_size; i++) {
 			position_list_t *pos = position_list_create(0, i, NULL);
 			
-			interval(NULL, ^(point_t *solve_end) {
-				solve_one_level(solve_end, pos, problem_size, cutoff_level, solution_count);
+			interval(NULL, ^(point_t *_) {
+				solve_one_level(pos, problem_size, cutoff_level, solution_count);
 			});
 		}
 	}
@@ -205,6 +217,8 @@ int main(int argc, char *argv[]) {
 		fprintf(stderr, "Usage: nqueens problem_size cutoff_level");
 		return 1;
 	}
+	
+//	dump = fopen("nqueens_dump.txt", "w");
 	
 	const int problem_size = atoi(argv[1]);
 	const int cutoff_level = atoi(argv[2]);
@@ -229,6 +243,8 @@ int main(int argc, char *argv[]) {
 	});
 	clock_t par_clock1 = clock();
 	double par_clockd = par_clock1 - par_clock0;
+	
+	assert(seq_solution_count == *par_solution_count);
 	
 	printf("Par. Solution Count: %d\n", *par_solution_count);
 	printf("Par. Processor Time: %.3f seconds\n", par_clockd / CLOCKS_PER_SEC);
