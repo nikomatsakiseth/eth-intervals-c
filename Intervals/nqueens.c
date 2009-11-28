@@ -225,32 +225,32 @@ int main(int argc, char *argv[]) {
 	const int cutoff_level = atoi(argv[2]);
 	
 	int seq_solution_count = 0;
-	clock_t seq_clock0 = clock();
+	time_t seq_time0 = time(NULL);
 	board_t *board = board_create(problem_size);
 	solve_sequentially(board, 0, &seq_solution_count);
 	board_free(board);
-	clock_t seq_clock1 = clock();
-	double seq_clockd = seq_clock1 - seq_clock0;
+	time_t seq_time1 = time(NULL);
+	time_t seq_timed = seq_time1 - seq_time0;
 		
 	printf("Seq. Solution Count: %d\n", seq_solution_count);
-	printf("Seq. Processor Time: %.3f seconds\n", seq_clockd / CLOCKS_PER_SEC);
+	printf("Seq. Processor Time: %ld seconds\n", seq_timed);
 	fflush(stdout);
 	
 	int *par_solution_count = (int*)malloc(sizeof(int));
 	*par_solution_count = 0;
-	clock_t par_clock0 = clock();
+	time_t par_time0 = time(NULL);
 	root_interval(^(point_t *end) {
 		solve_in_parallel(problem_size, cutoff_level, par_solution_count);
 	});
-	clock_t par_clock1 = clock();
-	double par_clockd = par_clock1 - par_clock0;
+	time_t par_time1 = time(NULL);
+	time_t par_timed = par_time1 - par_time0;
 	
 	assert(seq_solution_count == *par_solution_count);
 	
 	printf("Par. Solution Count: %d\n", *par_solution_count);
-	printf("Par. Processor Time: %.3f seconds\n", par_clockd / CLOCKS_PER_SEC);
+	printf("Par. Processor Time: %ld seconds\n", par_timed);
 	free(par_solution_count);
 
-	printf("Par/Seq Ratio: %.3f", par_clockd / seq_clockd);
+	printf("Par/Seq Ratio: %.3f", (1.0 * par_timed) / seq_timed);
 	return 0;
 }
