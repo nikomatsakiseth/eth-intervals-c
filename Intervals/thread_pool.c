@@ -585,7 +585,6 @@ static inline void worker_join(interval_worker_t *worker)
 /// Returns true if it managed to do a little work.
 static bool worker_recurse(interval_worker_t *worker)
 {
-	debugf("worker_recurse: %p", worker);
 	return worker_do_work(worker, 3);
 }
 
@@ -684,7 +683,7 @@ void interval_pool_destroy(interval_pool_t *pool)
 
 /// Creates an interval pool, executes \c blk, and then releases
 /// the pool.
-void interval_pool_run(int workers, void (^blk)(interval_pool_t *pool))
+void interval_pool_run(int workers, void (^blk)())
 {
 	init_worker_key();
 	interval_pool_t *pool = interval_pool_create();
@@ -705,7 +704,7 @@ void interval_pool_run(int workers, void (^blk)(interval_pool_t *pool))
 		worker_start(worker);
 	}
 	
-	blk(pool);
+	blk();
 	
 	interval_pool_destroy(pool);
 }
