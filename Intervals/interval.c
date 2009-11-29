@@ -42,9 +42,12 @@
  
  When a point P is about to occur, the arrive() method looks at P's RC:  
  * If P's RC is 1, then the scheduler holds the only ref. on P.
-   In that case, we follow a streamlined path: the wait count of
-   all successors S of P is decremented, but their RC is unaffected.
-   This may cause some of S to arrive.  
+   In that case, we skip the OCCURRED state and follow a streamlined path: 
+   the wait count of all successors S of P is decremented, but their 
+   RC is unaffected.  This may cause some of S to arrive.  
+   In the meantime, the RC of point is set to RC_DEAD_PRE, which serves
+   as a signal when the point is finally released that it does not hold
+   a ref. on its successors.
  * If P's RC is >1, then the scheduler must 
    increment the RC of each successor before 
    decrementing its WC.
@@ -86,6 +89,8 @@ static uint64_t live_points; // tracks number of live intervals when debugging
 #pragma mark Data Types and Simple Accessors
 
 #define WC_STARTED UINT64_MAX  // 
+#define RC_DEAD_PRE  0
+#define RC_DEAD_POST UINT64_MAX
 #define EDGE_CHUNK_SIZE 3
 #define NULL_EPOINT ((epoint_t)0)
 
@@ -197,7 +202,7 @@ static void task_execute(point_t *pnt, interval_task_t task, point_t *arg) {
 
 #pragma mark Manipulating Edge Lists
 
-static void arrive(point_t *interval, uint64_t sub_waits, uint64_t add_refs);
+static void arrive(point_t *interval, uint64_t add_refs);
 
 // Encodes in one pointer the interval and side to which an edge points.
 // If the synthetic bit is true, then this edge was not directly specified
@@ -244,16 +249,16 @@ static inline void insert_edge(edge_t **list, epoint_t epnt) {
 
 /// Invokes \c arrive() on all points referenced by
 /// the list \c edge.
-static void arrive_edge(edge_t *edge, uint64_t sub_waits, uint64_t add_refs) {
+static void arrive_edge(edge_t *edge, uint64_t add_refs) {
 	if(edge) {
 		for(int i = 0; i < EDGE_CHUNK_SIZE; i++) {
 			epoint_t epnt = edge->to_points[i];
 			if(epnt == NULL_EPOINT)
 				break;
-			arrive(point_of_epoint(epnt), sub_waits, add_refs);
+			arrive(point_of_epoint(epnt), add_refs);
 		}
 		
-		arrive_edge(edge->next, sub_waits, add_refs);
+		arrive_edge(edge->next, add_refs);
 	}
 }
 
@@ -370,14 +375,24 @@ static void interval_schedule_unchecked(current_interval_info_t *info);
 void interval_execute(point_t *start) {
 	point_t *end = start->bound;
 	
+	// If we hold the last ref on start, then don't
+	// put a pointer into the current interval info.
+	// This prevents interval() from creating outgoing
+	// edges from start.  There would be no purpose to
+	// such edges, as there are no retained nodes which can
+	// reach start.
 	current_interval_info_t info;
-	push_current_interval_info(&info, start, start->bound);
+	if(start->ref_count == RC_DEAD_PRE) {		
+		push_current_interval_info(&info, NULL, end);
+	} else {
+		push_current_interval_info(&info, start, end);
+	}
 	
 	task_execute(start, start->task, end);
 	// Note: start may be freed by task_execute!
 	
 	interval_schedule_unchecked(&info);	
-	arrive(end, 1, 1);
+	arrive(end, 0);
 	pop_current_interval_info(&info);
 }
 
@@ -385,10 +400,8 @@ void interval_execute(point_t *start) {
 // count must not result in the point's ref. count becoming 0! This
 // should never happen in any case, as one ref. belongs to the scheduler,
 // and it is only released in this function once the wait count becomes 0.
-static void arrive(point_t *point, uint64_t sub_waits, uint64_t add_refs) 
+static void arrive(point_t *point, uint64_t add_refs) 
 {
-	assert(sub_waits);
-	
 	// Adjust Ref Count:
 	uint64_t ref_count;
 	if(add_refs) 
@@ -397,9 +410,9 @@ static void arrive(point_t *point, uint64_t sub_waits, uint64_t add_refs)
 		ref_count = point->ref_count;
 
 	// Adjust Wait Count:
-	uint64_t wait_count = atomic_sub(&point->wait_count, sub_waits);
+	uint64_t wait_count = atomic_sub(&point->wait_count, 1);
 	
-	debugf("%p arrive(%lld,%lld) wait_count=%llx", point, sub_waits, add_refs, wait_count);
+	debugf("%p arrive(%lld) wait_count=%llx", point, add_refs, wait_count);
 	if(wait_count == 0) {
 		edge_t notify;
 		notify.next = NULL;
@@ -418,19 +431,19 @@ static void arrive(point_t *point, uint64_t sub_waits, uint64_t add_refs)
 		// Notify those coming after us and dispatch task (if any)
 		uint64_t add_refs;
 		if(ref_count == 1) {
-			// We hold the only ref on point.  Don't incr. RC of
-			// point's successors, instead just remove them.  We don't
-			// need a lock because no one else could be legally 
-			// inspecting point->out_edges without a ref.
+			// We hold the only ref on point... basically, point is dead
+			// now, but we need to keep it alive a bit longer so we can 
+			// schedule it's task, etc.  Therefore, we set its RC to a
+			// special marker (RC_DEAD_PRE) and do not increment the
+			// ref. counts on its successors.
+			point->ref_count = RC_DEAD_PRE;
 			add_refs = 0;
-			free_edges(point->out_edges, false);
-			point->out_edges = NULL;
 		} else {
 			// Someone else holds a ref on point.  
 			add_refs = 1;
 		}
-		arrive_edge(&notify, 1, add_refs);
-		if(point->bound) arrive(point->bound, 1, add_refs);
+		arrive_edge(&notify, add_refs);
+		if(point->bound) arrive(point->bound, add_refs);
 		task_dispatch(point, point->task);
 	}
 }
@@ -496,7 +509,7 @@ void root_interval(interval_block_t blk)
 		push_current_interval_info(&root_info, NULL, root_end);
 		blk(root_end);	
 		interval_schedule_unchecked(&root_info);
-		arrive(root_end, 1, 0);	
+		arrive(root_end, 0);	
 		pop_current_interval_info(&root_info);
 		
 		// Wait until root_end occurs (it may already have done so):
@@ -542,8 +555,8 @@ interval_t interval(point_t *bound, interval_block_t blk)
 		if(err == INTERVAL_OK) {			
 			interval_task_t startTask = task(Block_copy(blk), TASK_COPIED_BLOCK_TAG);
 
-			// Refs on the start point: task, unscheduled list, and optionally currentStart
-			int startRefs = 2;
+			// Refs on the start point: scheduler, optionally currentStart
+			int startRefs = 1;
 			if(currentStart != NULL)
 				startRefs++;
 			
@@ -592,7 +605,7 @@ interval_err_t subinterval(interval_block_t blk)
 	//    Note that start occurs immediately.  Used in dyn. race det. to adjust bound, 
 	//    but maybe we could get rid of it.
 	point_add_wait_count(info->end, 1);                  // from end point
-	point_t *end = point(info->end, signalTask, 1, 2);   // wait: task. refs: start, task.
+	point_t *end = point(info->end, signalTask, 1, 2);   // wait: task. refs: start, scheduler.
 	point_t *start = point(end, blkTask, WC_STARTED, 1); // refs: task.
 	if(info->start)
 		interval_add_hb_unchecked(info->start, start, false);
@@ -701,7 +714,7 @@ interval_err_t interval_lock(interval_t interval, guard_t *guard) {
 static void interval_schedule_unchecked(current_interval_info_t *info)
 {
 	if(info->unscheduled_starts) {
-		arrive_edge(info->unscheduled_starts, 1, 0);
+		arrive_edge(info->unscheduled_starts, 0);
 		free_edges(info->unscheduled_starts, false);
 		info->unscheduled_starts = NULL;	
 	}	
@@ -897,19 +910,42 @@ interval_t interval_retain(interval_t interval) {
 	point_retain(interval.end);
 	return interval;
 }
+
+static void point_free(point_t *point, bool dec_succ) {
+	assert(point->wait_count == WC_STARTED);
+	
+	free_edges(point->out_edges, dec_succ);
+	if(dec_succ)
+		point_release(point->bound);
+	
+	// Note: point->task is released by task_execute
+	
+	free(point);
+	
+#   ifndef NDEBUG
+	atomic_sub(&live_points, 1);
+#   endif
+}
+
 void point_release(point_t *point) {
 	if(point) {
 		uint64_t rc = atomic_sub(&point->ref_count, 1);
-		if(rc == 0) {
-			debugf("%p: freed", point);
-			free_edges(point->out_edges, true);
-			point_release(point->bound);
-			// Note: point->task is released by task_execute
-			free(point);
+		if(rc == RC_DEAD_POST) {
+			// Transition directly from SCHEDULED -> FREED
+			//
+			// In this case, we do not hold a ref on our successors,
+			// so do not decrement their RC.
 			
-#   ifndef NDEBUG
-			atomic_sub(&live_points, 1);
-#   endif
+			debugf("%p: (dead) freed", point);
+			point_free(point, false);
+		} else if(rc == 0) {
+			// Transition from OCCURRED -> FREED
+			//
+			// In this case, we hold a ref on our successors,
+			// so also decrement their RC.
+			
+			debugf("%p: freed", point);
+			point_free(point, true);
 		} else {
 			debugf("%p: point_release rc=%llx", point, rc);
 		}			
