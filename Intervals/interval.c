@@ -1065,6 +1065,7 @@ void point_release(point_t *point) {
 void guard_release(guard_t *guard) {
 	int count = atomic_sub(&guard->ref_count, 1);
 	if(count == 0) {
+		point_release(guard->last_lock);
 		free(guard);
 	}
 }
