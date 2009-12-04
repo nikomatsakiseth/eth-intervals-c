@@ -95,8 +95,9 @@ static uint64_t live_points; // tracks number of live intervals when debugging
 #define NULL_EPOINT ((epoint_t)0)
 
 typedef int epoch_t;
-typedef intptr_t epoint_t;
-typedef intptr_t interval_task_t;
+typedef tagged_ptr_t epoint_t;
+typedef tagged_ptr_t interval_task_t;
+typedef tagged_ptr_t guard_list_t;
 
 typedef struct edge_t {
 	epoint_t to_points[EDGE_CHUNK_SIZE];
@@ -104,8 +105,17 @@ typedef struct edge_t {
 } edge_t;
 
 struct guard_t {
-	int ref_count;      // Always modified atomically.
-	point_t *last_lock; // Always exchanged atomically.
+	/// Ref count of the guard.
+	/// Always modified atomically.
+	/// Users may hold refs.  Points held refs
+	/// when a guard is within their pending_guards
+	/// list.
+	int ref_count;
+	
+	/// The bound of the last point to have obtained
+	/// the lock.  Always exchanged atomically.
+	/// This point is retained.
+	point_t *last_lock;
 };
 
 struct point_t {
@@ -124,6 +134,17 @@ struct point_t {
 	
 	/// List of outgoing edges.  Guarded by \c lock.
 	edge_t *out_edges;
+	
+	/// List of pending guards to acquire once the incoming
+	/// dependencies are satisfied.  We wait to acquire locks
+	/// on guards because (a) it's better to hold the lock
+	/// for less time, (b) it prevents unnecessary deadlocks.
+	/// For example, if a -> b and both b and a lock
+	/// g, we want to be sure that b doesn't get the lock first!
+	///
+	/// Guards in this list will be acquired before we occur,
+	/// and release once our bound occurs.
+	guard_list_t pending_guards;
 	
 	/// Wait count: number of events which must occur
 	/// before we can execute.  The point cannot be freed
@@ -148,18 +169,57 @@ struct current_interval_info_t {
 	edge_t *unscheduled_starts;    ///< list of start points created but not yet scheduled
 };
 
+#pragma mark Pending Guard Lists
+
+#define EMPTY_GUARD_LIST 0
+#define MANY_GUARD_TAG   0 // n.b.: MANY_GUARD_TAG + NULL ptr == EMPTY_GUARD_LIST
+#define ONE_GUARD_TAG    1
+
+static void guard_list_push(guard_list_t *guard_list, guard_t *guard) {
+	guard_list_t gl = *guard_list;
+	
+	if(gl == EMPTY_GUARD_LIST) {
+		*guard_list = tagged_ptr(guard, ONE_GUARD_TAG);
+		return;
+	}
+	
+	int tag = extract_tag(gl);
+	llstack_t *list;
+	if(tag == ONE_GUARD_TAG) {
+		list = NULL;
+		llstack_push(&list, extract_ptr(gl));
+	} else {
+		list = (llstack_t*)extract_ptr(gl);
+	}
+	
+	llstack_push(&list, guard);
+	*guard_list = tagged_ptr(list, MANY_GUARD_TAG);
+}
+
+static guard_t *guard_list_pop(guard_list_t *guard_list) {
+	guard_list_t gl = *guard_list;
+	if(gl == EMPTY_GUARD_LIST)
+		return NULL;
+
+	int tag = extract_tag(gl);
+	if(tag == ONE_GUARD_TAG)
+		return (guard_t*)extract_ptr(gl);
+		
+	llstack_t *list = (llstack_t*)extract_ptr(gl);
+	guard_t *guard = llstack_pop(&list);	
+	*guard_list = tagged_ptr(list, MANY_GUARD_TAG);	
+	return guard;
+}
+		
 #pragma mark Manipulating Interval Tasks
 
 #define EMPTY_TASK            0
 #define TASK_LATCH_TAG        1
 #define TASK_BLOCK_TAG        2
 #define TASK_COPIED_BLOCK_TAG 3
-#define TASK_TAG              3
 
 static interval_task_t task(void *ptr, int tag) {
-	intptr_t task = (intptr_t)ptr;
-	task |= tag;
-	return task;
+	return tagged_ptr(ptr, tag);
 }
 
 // Dispatches the task for 'pnt' once 'pnt' arrives.  
@@ -167,8 +227,8 @@ static interval_task_t task(void *ptr, int tag) {
 // once the task fully completes.
 static void task_dispatch(point_t *pnt, interval_task_t task) {
 	if(task != EMPTY_TASK) {
-		int tag = (task & TASK_TAG);
-		intptr_t ptr = (task & ~TASK_TAG);
+		int tag = extract_tag(task);
+		void *ptr = extract_ptr(task);
 		
 		if(tag == TASK_LATCH_TAG) {
 			interval_pool_latch_t *latch = (interval_pool_latch_t*)ptr;
@@ -189,8 +249,8 @@ static void task_dispatch(point_t *pnt, interval_task_t task) {
 // is a block.
 static void task_execute(point_t *pnt, interval_task_t task, point_t *arg) {
 	assert(task != EMPTY_TASK);
-	int tag = (task & TASK_TAG);
-	intptr_t ptr = (task & ~TASK_TAG);
+	int tag = extract_tag(task);
+	void *ptr = extract_ptr(task);
 	
 	assert(tag == TASK_BLOCK_TAG || tag == TASK_COPIED_BLOCK_TAG);
 	interval_block_t blk = (interval_block_t)ptr;
@@ -202,27 +262,31 @@ static void task_execute(point_t *pnt, interval_task_t task, point_t *arg) {
 
 #pragma mark Manipulating Edge Lists
 
+#define NORMAL_FLAG    0
+#define SYNTHETIC_FLAG 1
+
 static void arrive(point_t *interval, uint64_t add_refs);
 
 // Encodes in one pointer the interval and side to which an edge points.
 // If the synthetic bit is true, then this edge was not directly specified
 // by the user but rather resulted from locking a guard or some other such
 // feature.
-static inline epoint_t epoint(point_t *point, bool synthetic) {
-	epoint_t epnt = (epoint_t)point;
-	epnt |= synthetic;
-	return epnt;
+static inline epoint_t epoint(point_t *point, int flags) {
+	return tagged_ptr(point, flags);
 }
 
 /// Extract point from \c pnt.
 static inline point_t *point_of_epoint(epoint_t pnt) {
-	intptr_t i = pnt & ~0x3;
-	return (point_t*)i;
+	return (point_t*)extract_ptr(pnt);
+}
+
+static inline int flags_of_epoint(epoint_t pnt) {
+	return extract_tag(pnt);
 }
 
 /// Extract synthetic flag from \c pnt.
 static inline bool is_synthetic_epoint(epoint_t pnt) {
-	return (pnt & 0x1) != 0;
+	return (flags_of_epoint(pnt) & SYNTHETIC_FLAG) != 0;
 }
 
 /// Adds \c epnt to \c *list, possibly overwriting
@@ -336,6 +400,7 @@ static point_t *point(point_t *bound, interval_task_t task, uint64_t wc, uint64_
 	result->depth = (bound ? bound->depth + 1 : 0);
 	result->task = task;
 	result->lock = 0;
+	result->pending_guards = EMPTY_GUARD_LIST;
 	result->out_edges = NULL;
 	result->wait_count = wc;
 	result->ref_count = rc;
@@ -382,7 +447,7 @@ void interval_execute(point_t *start) {
 	// such edges, as there are no retained nodes which can
 	// reach start.
 	current_interval_info_t info;
-	if(start->ref_count == RC_DEAD_PRE) {		
+	if(start->ref_count == RC_DEAD_PRE) {
 		push_current_interval_info(&info, NULL, end);
 	} else {
 		push_current_interval_info(&info, start, end);
@@ -395,6 +460,10 @@ void interval_execute(point_t *start) {
 	arrive(end, 0);
 	pop_current_interval_info(&info);
 }
+
+static void interval_add_hb_unchecked(point_t *before, point_t *after, int edge_flags);
+static void lock_pending_guards(point_t *start_point);
+static void occur(point_t *point, uint64_t ref_count);
 
 // Decrements the count(s) of 'interval.side' by 'count'.  Note that
 // count must not result in the point's ref. count becoming 0! This
@@ -414,50 +483,81 @@ static void arrive(point_t *point, uint64_t add_refs)
 	
 	debugf("%p arrive(%lld) wait_count=%llx", point, add_refs, wait_count);
 	if(wait_count == 0) {
-		edge_t notify;
-		notify.next = NULL;
-		notify.to_points[0] = NULL_EPOINT;
-		
-		// We must add to counts[side] atomically in case of other, simultaneous
-		// threads adjusting the ref count.  Note that we copy into notify by
-		// value.  This is because, once we released the lock but before we
-		// invoke arrive_edge(), other threads might add themselves into the
-		// out_edges array.  They would then be over-notified of our termination.
-		point_lock(point);
-		point->wait_count = WC_STARTED;
-		if(point->out_edges) notify = *point->out_edges;		
-		point_unlock(point);
-		
-		// Notify those coming after us and dispatch task (if any)
-		uint64_t add_refs;
-		if(ref_count == 1) {
-			// We hold the only ref on point... basically, point is dead
-			// now, but we need to keep it alive a bit longer so we can 
-			// schedule it's task, etc.  Therefore, we set its RC to a
-			// special marker (RC_DEAD_PRE) and do not increment the
-			// ref. counts on its successors.
-			point->ref_count = RC_DEAD_PRE;
-			add_refs = 0;
+		if(point->pending_guards != EMPTY_GUARD_LIST) {
+			point->wait_count = 1;      // Prevent point from occurring while we add locks.
+			lock_pending_guards(point);
+			arrive(point, 0);           // Make point eligible to occur.
 		} else {
-			// Someone else holds a ref on point.  
-			add_refs = 1;
+			occur(point, ref_count);
 		}
-		arrive_edge(&notify, add_refs);
-		if(point->bound) arrive(point->bound, add_refs);
-		task_dispatch(point, point->task);
 	}
+}
+
+static void lock_pending_guards(point_t *start_point) {
+	point_t *end_point = start_point->bound;
+	
+	guard_t *guard;
+	while((guard = guard_list_pop(&start_point->pending_guards))) {
+		
+		point_retain(end_point);
+		point_t *last_lock = atomic_xchg_ptr(&guard->last_lock, end_point);		
+		if(last_lock != NULL) {
+			interval_add_hb_unchecked(last_lock, start_point, SYNTHETIC_FLAG);
+			point_release(last_lock);
+		}
+		
+		guard_release(guard); // was acquired in interval_add_lock() 
+	}
+}
+
+static void occur(point_t *point, uint64_t ref_count)
+{
+	edge_t notify;
+	notify.next = NULL;
+	notify.to_points[0] = NULL_EPOINT;
+	
+	// We must add to counts[side] atomically in case of other, simultaneous
+	// threads adjusting the ref count.  Note that we copy into notify by
+	// value.  This is because, once we released the lock but before we
+	// invoke arrive_edge(), other threads might add themselves into the
+	// out_edges array.  They would then be over-notified of our termination.
+	point_lock(point);
+	point->wait_count = WC_STARTED;
+	if(point->out_edges) notify = *point->out_edges;		
+	point_unlock(point);
+	
+	// Notify those coming after us and dispatch task (if any)
+	uint64_t add_refs;
+	if(ref_count == 1) {
+		// We hold the only ref on point... basically, point is dead
+		// now, but we need to keep it alive a bit longer so we can 
+		// schedule it's task, etc.  Therefore, we set its RC to a
+		// special marker (RC_DEAD_PRE) and do not increment the
+		// ref. counts on its successors.
+		point->ref_count = RC_DEAD_PRE;
+		add_refs = 0;
+	} else {
+		// Someone else holds a ref on point.  
+		add_refs = 1;
+	}
+	arrive_edge(&notify, add_refs);
+	if(point->bound) arrive(point->bound, add_refs);
+	task_dispatch(point, point->task);
 }
 
 #pragma mark Safety Checks
 
-static void interval_add_hb_unchecked(point_t *before, point_t *after, bool synthetic);
-
 static interval_err_t check_no_cycle(current_interval_info_t *info, point_t *from_pnt, point_t *to_pnt) 
 {
+	// TODO This check is not sufficient.  We need to either
+	// TODO detect statically, or insert edge optimistically
+	// TODO as in the Java implemtation.
+	
 #   ifdef INTERVAL_SAFETY_CHECKS_ENABLED
 	if(point_hb(to_pnt, from_pnt))
 		return INTERVAL_CYCLE;
 #   endif
+	
 	return INTERVAL_OK;
 }
 
@@ -564,15 +664,15 @@ interval_t interval(point_t *bound, interval_block_t blk)
 			point_t *end = point(bound, EMPTY_TASK, 2, 1);         // Wait: start, task. Ref: scheduler.
 			point_t *start = point(end, startTask, 1, startRefs);  // Wait: scheduler. Ref: (See above).
 			
-			if(currentStart) {				
+			if(currentStart) {
 				point_lock(currentStart);
-				insert_edge(&currentStart->out_edges, epoint(start, false));
+				insert_edge(&currentStart->out_edges, epoint(start, NORMAL_FLAG));
 				point_unlock(currentStart);
 			}
 			
 			debugf("%p-%p: interval(%p) from %p-%p", start, end, bound, currentStart, info->end);
 			
-			insert_edge(&info->unscheduled_starts, epoint(start, false));
+			insert_edge(&info->unscheduled_starts, epoint(start, NORMAL_FLAG));
 			
 			return (interval_t) { .start = start, .end = end };
 		}
@@ -608,7 +708,7 @@ interval_err_t subinterval(interval_block_t blk)
 	point_t *end = point(info->end, signalTask, 1, 2);   // wait: task. refs: start, scheduler.
 	point_t *start = point(end, blkTask, WC_STARTED, 1); // refs: task.
 	if(info->start)
-		interval_add_hb_unchecked(info->start, start, false);
+		interval_add_hb_unchecked(info->start, start, NORMAL_FLAG);
 	
 	debugf("%p-%p: subinterval of %p-%p", start, end, info->start, info->end);
 	
@@ -627,7 +727,12 @@ interval_err_t subinterval_f(task_func_t task, void *userdata)
 }
 
 #pragma mark Scheduling Intervals
-static void interval_add_hb_unchecked(point_t *before, point_t *after, bool synthetic) {
+
+/// Adds an edge from before to after with the given flags.
+///
+/// Performs no safety checks, but is thread safe, and
+/// adjusts wait and ref counts as needed.
+static void interval_add_hb_unchecked(point_t *before, point_t *after, int edge_flags) {
 	debugf("%p->%p", before, after);	
 	
 	// Note: we have to adjust 'after->counts' while holding 
@@ -675,7 +780,7 @@ static void interval_add_hb_unchecked(point_t *before, point_t *after, bool synt
 	else 
 		point_retain(after);
 	
-	insert_edge(&before->out_edges, epoint(after, synthetic));	
+	insert_edge(&before->out_edges, epoint(after, edge_flags));	
 	
 	point_unlock(before);
 }
@@ -692,22 +797,28 @@ interval_err_t interval_add_hb(point_t *before, point_t *after) {
 	if((err = check_can_add_hb(info, before, after)) != INTERVAL_OK)
 		return err;
 	
-	interval_add_hb_unchecked(before, after, false);
+	interval_add_hb_unchecked(before, after, NORMAL_FLAG);
 	return INTERVAL_OK;
 }
 
-interval_err_t interval_lock(interval_t interval, guard_t *guard) {
+interval_err_t interval_add_lock(point_t *start_point, guard_t *guard) {
 	current_interval_info_t *info = current_interval_info();
 	if(info == NULL)
 		return INTERVAL_NO_ROOT;
 	
 	interval_err_t err;
-	if((err = check_can_add_dep(info, interval.start)) != INTERVAL_OK)
+	if((err = check_can_add_dep(info, start_point)) != INTERVAL_OK)
 	   return err;
 	
-	point_t *pnt = atomic_xchg_ptr(&guard->last_lock, interval.end);
-	if(pnt != NULL)
-		interval_add_hb_unchecked(pnt, interval.start, true);
+	// The guard will be released when the lock is acquired
+	// in lock_pending_guards().
+	guard_retain(guard);
+	
+	point_t *start = start_point;
+	point_lock(start);
+	guard_list_push(&start->pending_guards, guard);
+	point_unlock(start);
+	
 	return INTERVAL_OK;
 }
 

@@ -138,18 +138,28 @@ interval_err_t subinterval_f(task_func_t task, void *userdata);
 /// an appropriate error code describing why it could not be added.
 interval_err_t interval_add_hb(point_t *before, point_t *after);
 
-/// Indicates that the interval \c interval should acquire a lock on
-/// \c guard before executing.  If \c guard is \c NULL, this function
-/// has no effect.  The runtime will guarantee that a lock on \c guard
-/// is acquired before \c interval begins execution and released after
-/// it finishes.  
+/// Indicates that the point \c start should acquire a lock on
+/// \c guard before executing.  The lock will be released after
+/// the bound of \c start occurs.  Generally, \c start is the
+/// start point of an interval, in which case its bound is the
+/// interval's end point, and so the lock is held for the entire
+/// interval.
+/// 
+/// If \c guard is \c NULL, this function has no effect.  
+///
+/// It must be legal to add a dependency to \c start.  These
+/// conditions are the same as when adding a new edge with
+/// \c start as the target, see \c interval_add_hb() for details.
 ///
 /// Note that the use of locks can cause deadlocks.  Currently
 /// deadlocks resulting from the use of locks are not detected.
 ///
 /// \return \c INTERVAL_OK if the lock requirement was correctly
-/// specified.  \c INTERVAL_NO_ROOT if invoked from outside the root interval.
-interval_err_t interval_lock(interval_t interval, guard_t *guard);
+/// specified.
+/// \return \c INTERVAL_EDGE_REQUIRED if it is not legal to add
+/// a dependency to \c start.
+/// \return \c INTERVAL_NO_ROOT if invoked from outside the root interval.
+interval_err_t interval_add_lock(point_t *start, guard_t *guard);
 
 /// Indicates that all intervals which have been created by this task
 /// using \c interval() or \c interval_f() but not yet scheduled should

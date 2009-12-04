@@ -16,8 +16,8 @@
 #include <limits.h>
 #include <string.h>
 #include "thread_pool.h"
-#include "internal.h"
 #include "atomic.h"
+#include "internal.h"
 
 //#define PROFILE
 
@@ -26,36 +26,6 @@
 #include <unistd.h>
 static long number_of_processors() {
 	return sysconf(_SC_NPROCESSORS_CONF);
-}
-
-#pragma mark Simple Temporary Stacks
-
-typedef struct llstack_t llstack_t;
-struct llstack_t {
-	void *value;
-	llstack_t *next;
-};
-
-static void llstack_push(llstack_t **stack, void *value) {
-	llstack_t *link = (llstack_t*)malloc(sizeof(llstack_t));
-	link->value = value;
-	link->next = *stack;
-	*stack = link;
-}
-
-static void *llstack_pop(llstack_t **stack) {
-	if(*stack == NULL)
-		return NULL;
-	llstack_t *link = *stack;
-	void *value = link->value;
-	*stack = link->next;
-	free(link);
-	return value;
-}
-
-static void llstack_free(llstack_t **stack) {
-	while(*stack)
-		llstack_pop(stack);
 }
 
 #pragma mark Data Types and Constants
