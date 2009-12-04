@@ -998,7 +998,7 @@ bool point_bounded_by(point_t *pnt, point_t *bnd) {
 }
 
 #pragma mark Creating Guards
-guard_t *guard() {
+guard_t *create_guard() {
 	guard_t *guard = (guard_t*)malloc(sizeof(guard_t));
 	guard->ref_count = 1;
 	guard->last_lock = NULL;

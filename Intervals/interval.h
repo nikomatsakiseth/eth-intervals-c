@@ -18,14 +18,27 @@
  
  All types in the interval library are ref counted, and each
  type (points, guards, etc) has an appropriate 
- retain()/release() function.
+ retain()/release() function.  The fundamental rule for
+ knowing when you need to invoke *_release() is:
  
- POINTS: Unless retained, points are freed once they occur.
- Basically this means that you should retain/release points 
- when you put them into a data structure unless you know
- that the data structure will only be used before the point
- occurs.
+ /------------------------------------------------\
+ | Thou shalt balance every call to create_*() or |
+ | *_retain() must with a call to *_release()     |
+ \------------------------------------------------/ 
  
+ If you get back a pointer from a functon that is not
+ named create_*() or *_retain() and you would like to
+ keep it around, you should retain it yourself!
+
+ The detailed rules are as follows:
+ 
+ POINTS: Note that no functions which create points or
+ intervals begin with "create".  This is because points
+ are retained by the system until they occur, and they
+ cannot occur until (at minimum) they are scheduled.  
+ Therefore, you do not need to retain/release a point
+ unless you are storing it somewhere after it is scheduled.
+  
  GUARDS: When created, guards have a ref count of 1.  You
  are responsible for releasing this initial reference at
  some point.
@@ -232,10 +245,9 @@ bool point_bounded_by(point_t *point, point_t *bound);
 
 #pragma mark Creating Guards
 
-/// Creates and returns a new guard object.  The guard object
-/// will be freed when the current interval ends unless you 
-/// retain it.
-guard_t *guard();
+/// Creates and returns a new guard object.  You are
+/// responsible for releasing this guard eventually.
+guard_t *create_guard();
 
 #pragma mark Memory Management
 

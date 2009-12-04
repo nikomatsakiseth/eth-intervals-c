@@ -73,7 +73,7 @@ static int ordered_lock_stamps[2];
 void ordered_lock_test(point_t *parentEnd, void *_) {
 	interval_t a = interval_f(parentEnd, stamp_task, ordered_lock_stamps + 0);
 	interval_t b = interval_f(parentEnd, stamp_task, ordered_lock_stamps + 1);
-	guard_t *g = guard();
+	guard_t *g = create_guard();
 	interval_add_hb(a.end, b.start);
 	interval_add_lock(b.start, g);
 	interval_add_lock(a.start, g);
@@ -111,7 +111,7 @@ void check_lock_test(point_t *_1, void *_2) {
 	subinterval(^(point_t *end) {
 		interval_t a = interval_f(end, check_lock_task, check_lock_times + 4);
 		interval_t b = interval_f(end, check_lock_task, check_lock_times + 6);
-		guard_t *g = guard();
+		guard_t *g = create_guard();
 		interval_add_lock(a.start, g);
 		interval_add_lock(b.start, g);
 		guard_release(g);
