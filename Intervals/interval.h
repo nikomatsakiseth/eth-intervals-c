@@ -12,9 +12,13 @@
 
 #include <stdbool.h>
 
-/**
- 
+/** 
  MEMORY MANAGEMENT CONVENTIONS
+ 
+ We use a ref counting scheme modeled on the rules
+ for Cocoa devised by Apple, which is probably the 
+ only sane ref counting scheme ever devised:
+ http://developer.apple.com/mac/library/documentation/Cocoa/Conceptual/MemoryMgmt/MemoryMgmt.html
  
  All types in the interval library are ref counted, and each
  type (points, guards, etc) has an appropriate 
@@ -24,26 +28,60 @@
  /------------------------------------------------\
  | Thou shalt balance every call to create_*() or |
  | *_retain() must with a call to *_release()     |
+ |                                                |
+ | Also, thou shalt retain things that thou       |
+ | wouldst like to have around later.  None of    |
+ | this "if you love it, set it free" nonsense.   |
  \------------------------------------------------/ 
  
- If you get back a pointer from a functon that is not
- named create_*() or *_retain() and you would like to
- keep it around, you should retain it yourself!
-
- The detailed rules are as follows:
+ You should follow this naming convention yourself as
+ well!  Therefore, use the name create_*() or *_retain()
+ if you always return a reference that must be released.
+ Use a different name if you never return a reference
+ that must be released.  If you only sometimes return 
+ a new or retained reference, then see the section on 
+ autoreleasing below.
  
- POINTS: Note that no functions which create points or
- intervals begin with "create".  This is because points
- are retained by the system until they occur, and they
- cannot occur until (at minimum) they are scheduled.  
- Therefore, you do not need to retain/release a point
- unless you are storing it somewhere after it is scheduled.
+ Details Per Type
+ ----------------
+ 
+ POINTS: Points are retained by the system until they 
+ occur, and they cannot occur until (at minimum) they are 
+ scheduled.  Therefore, because all functions which
+ create new points return unscheduled points, you only
+ need to retain a point if you wish to keep a pointer
+ after it has been scheduled. Also, if you can guarantee
+ that the pointer will only be used by intervals
+ whose end happens before the point, but that's 
+ less common.
   
  GUARDS: When created, guards have a ref count of 1.  You
  are responsible for releasing this initial reference at
  some point.
  
- **/
+ Autoreleasing
+ -------------
+ 
+ Sometimes you might write a function that returns an
+ interval which may or may not need to be released in the
+ future.  In that case, you can either
+ 
+ (1) Always retain the ref count, and give the function
+     the name *_retain() (or maybe bend the rules and use
+     *_retained()).
+ 
+ (2) Use an auto-release function and give the function a
+     different name.  Invoking *_autorelease() will 
+     cause the reference count to be released when
+     the current interval's task returns.
+ 
+ Using the latter form frees your caller from having to
+ remember to release the return value.  Instead, they
+ are obligated to retain it if they want to retain it.
+ 
+ If necessary, the caller can use a subinterval() to ensure
+ that the returned value is freed as soon as possible.
+**/
 
 #define INTERVAL_SAFETY_CHECKS_ENABLED
 
@@ -275,5 +313,22 @@ void guard_release(guard_t *guard);
 
 /// Releases a reference on both the start and end point of \c interval.
 void interval_release(interval_t interval);
+
+/// Adds \c point to a list of points to be released once the
+/// current interval's task returns.  If invoked outside of the
+/// root interval, behavior is undefined.
+/// \return The point \c point.
+point_t *point_autorelease(point_t *point);
+
+/// Adds \c guard to a list of guards to be released once the
+/// current interval's task returns.  If invoked outside of the
+/// root interval, behavior is undefined.
+/// \return The guard \c guard.
+guard_t *guard_autorelease(guard_t *guard);
+
+/// Invokes \c point_autorelease() on both the start and
+/// end points.
+/// \return The interval \c interval.
+interval_t interval_autorelease(interval_t interval);
 
 #endif

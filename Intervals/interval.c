@@ -82,9 +82,11 @@
 #include "atomic.h"
 #include "internal.h"
 
-#ifndef NDEBUG
-static uint64_t live_objects; // tracks number of live intervals/guards when debugging ref counts
-#endif
+// Tracks the number of live objects.  This count
+// is ONLY MAINTAINED when NDEBUG is not defined!
+// This field is not static so it can be referenced
+// from testing code.
+uint64_t interval_live_objects; 
 
 #pragma mark Data Types and Simple Accessors
 
@@ -167,6 +169,9 @@ struct current_interval_info_t {
 	point_t *start;                ///< a point which \em happens before current task, may be \c NULL
 	point_t *end;                  ///< bound of current task
 	edge_t *unscheduled_starts;    ///< list of start points created but not yet scheduled
+	
+	llstack_t *autorelease_points;
+	llstack_t *autorelease_guards;
 };
 
 #pragma mark Pending Guard Lists
@@ -370,10 +375,22 @@ static void push_current_interval_info(current_interval_info_t *info, point_t *s
 	info->end = end;
 	info->next = current_interval_info();
 	info->unscheduled_starts = NULL;
+	info->autorelease_points = NULL;
+	info->autorelease_guards = NULL;
 	pthread_setspecific(current_interval_key, info);
 }
 
-static void pop_current_interval_info(current_interval_info_t *info) {
+static void pop_current_interval_info(current_interval_info_t *info) {	
+	while(info->autorelease_points) {
+		point_t *point = llstack_pop(&info->autorelease_points);
+		point_release(point);
+	}
+	
+	while(info->autorelease_guards) {
+		guard_t *point = llstack_pop(&info->autorelease_guards);
+		guard_release(point);
+	}
+	
 	pthread_setspecific(current_interval_key, info->next);
 }
 
@@ -409,7 +426,7 @@ static point_t *point(point_t *bound, interval_task_t task, uint64_t wc, uint64_
 	debugf("%p = point(%p, wc=%llx, rc=%llx)", result, bound, wc, rc);
 	
 #   ifndef NDEBUG
-	atomic_add(&live_objects, 1);
+	atomic_add(&interval_live_objects, 1);
 #   endif
 	
 	return result;
@@ -618,7 +635,7 @@ void root_interval(interval_block_t blk)
 		//    Note that the pool will shutdown when this block returns.
 		interval_pool_wait_latch(&latch);
 		
-		assert(live_objects == 0);		
+		assert(interval_live_objects == 0);		
 	});
 }
 
@@ -830,7 +847,7 @@ static void interval_schedule_unchecked(current_interval_info_t *info)
 		arrive_edge(info->unscheduled_starts, 0);
 		free_edges(info->unscheduled_starts, false);
 		info->unscheduled_starts = NULL;	
-	}	
+	}
 }
 
 interval_err_t interval_schedule() {
@@ -1004,7 +1021,7 @@ guard_t *create_guard() {
 	guard->last_lock = NULL;
 	
 #   ifndef NDEBUG
-	atomic_add(&live_objects, 1);
+	atomic_add(&interval_live_objects, 1);
 #   endif
 	
 	return guard;
@@ -1041,7 +1058,7 @@ static void point_free(point_t *point, bool dec_succ) {
 	free(point);
 	
 #   ifndef NDEBUG
-	atomic_sub(&live_objects, 1);
+	atomic_sub(&interval_live_objects, 1);
 #   endif
 }
 
@@ -1075,7 +1092,7 @@ void guard_release(guard_t *guard) {
 		point_release(guard->last_lock);
 		free(guard);
 #       ifndef NDEBUG
-		atomic_sub(&live_objects, 1);
+		atomic_sub(&interval_live_objects, 1);
 #       endif
 	}
 }
@@ -1083,6 +1100,30 @@ void guard_release(guard_t *guard) {
 void interval_release(interval_t interval) {
 	point_release(interval.start);
 	point_release(interval.end);
+}
+
+point_t *point_autorelease(point_t *point) {
+	if(point != NULL) {
+		current_interval_info_t *current = current_interval_info();
+		assert(current != NULL);
+		llstack_push(&current->autorelease_points, point);
+	}
+	return point;
+}
+
+guard_t *guard_autorelease(guard_t *guard) {
+	if(guard != NULL) {
+		current_interval_info_t *current = current_interval_info();
+		assert(current != NULL);
+		llstack_push(&current->autorelease_guards, guard);
+	}
+	return guard;
+}
+
+interval_t interval_autorelease(interval_t interval) {
+	point_autorelease(interval.start);
+	point_autorelease(interval.end);
+	return interval;
 }
 
 // Define down here so as not to include dispatch

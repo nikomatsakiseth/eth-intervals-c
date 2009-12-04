@@ -84,6 +84,37 @@ void ordered_lock_check() {
 	ASSERT(ordered_lock_stamps[0] + 1 == ordered_lock_stamps[1]);
 }
 
+#pragma mark auto release
+
+// Create a bunch of points and guards and autorelease them.
+// Note that we track the number of live objects.
+void autorelease_test() {
+	extern uint64_t interval_live_objects;
+	
+	uint64_t live_before = interval_live_objects;
+	subinterval(^(point_t *parentEnd) {
+		for(int i = 0; i < 10; i++) {
+			interval_t a = interval_f(parentEnd, stamp_task, ordered_lock_stamps + 0);
+			interval_retain(a);
+			interval_autorelease(a);
+		}
+		
+		for(int i = 0; i < 10; i++) {
+			guard_t *g = create_guard();
+			guard_autorelease(g);
+		}
+		
+		uint64_t live_mid = interval_live_objects;
+		ASSERT(live_mid > live_before);
+		interval_schedule();
+		
+		ASSERT(live_mid == interval_live_objects);
+	});
+	uint64_t live_after = interval_live_objects;
+	
+	ASSERT(live_before == live_after);
+}
+
 #pragma mark check locks
 
 // Creates two pairs of intervals.  The first pair
@@ -150,5 +181,7 @@ int main() {
 		
 		subinterval_f(check_lock_test, NULL);
 		check_lock_check();
+		
+		autorelease_test();
 	});	
 }
