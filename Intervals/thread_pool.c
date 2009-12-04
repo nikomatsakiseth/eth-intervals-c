@@ -661,8 +661,11 @@ void interval_pool_run(int workers, void (^blk)())
 	// Fire-up workers.  This is non-ideal, as we
 	// currently have a fixed number of workers, etc.,
 	// but it will do.
-	if(!workers)
-		workers = number_of_processors();	
+	if(!workers) {
+		workers = number_of_processors();
+		if(workers == 1)
+			workers = 2;  // Always create at least a LITTLE parallelism...
+	}
 	
 	// worker 0 is the current process:
 	interval_worker_t *worker = worker_create(pool);

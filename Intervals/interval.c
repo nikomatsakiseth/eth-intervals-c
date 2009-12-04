@@ -83,7 +83,7 @@
 #include "internal.h"
 
 #ifndef NDEBUG
-static uint64_t live_points; // tracks number of live intervals when debugging
+static uint64_t live_objects; // tracks number of live intervals/guards when debugging ref counts
 #endif
 
 #pragma mark Data Types and Simple Accessors
@@ -202,15 +202,17 @@ static guard_t *guard_list_pop(guard_list_t *guard_list) {
 		return NULL;
 
 	int tag = extract_tag(gl);
-	if(tag == ONE_GUARD_TAG)
+	if(tag == ONE_GUARD_TAG) {
+		*guard_list = EMPTY_GUARD_LIST;
 		return (guard_t*)extract_ptr(gl);
+	}
 		
 	llstack_t *list = (llstack_t*)extract_ptr(gl);
 	guard_t *guard = llstack_pop(&list);	
 	*guard_list = tagged_ptr(list, MANY_GUARD_TAG);	
 	return guard;
 }
-		
+
 #pragma mark Manipulating Interval Tasks
 
 #define EMPTY_TASK            0
@@ -407,7 +409,7 @@ static point_t *point(point_t *bound, interval_task_t task, uint64_t wc, uint64_
 	debugf("%p = point(%p, wc=%llx, rc=%llx)", result, bound, wc, rc);
 	
 #   ifndef NDEBUG
-	atomic_add(&live_points, 1);
+	atomic_add(&live_objects, 1);
 #   endif
 	
 	return result;
@@ -616,7 +618,7 @@ void root_interval(interval_block_t blk)
 		//    Note that the pool will shutdown when this block returns.
 		interval_pool_wait_latch(&latch);
 		
-		assert(live_points == 0);		
+		assert(live_objects == 0);		
 	});
 }
 
@@ -1000,6 +1002,11 @@ guard_t *guard() {
 	guard_t *guard = (guard_t*)malloc(sizeof(guard_t));
 	guard->ref_count = 1;
 	guard->last_lock = NULL;
+	
+#   ifndef NDEBUG
+	atomic_add(&live_objects, 1);
+#   endif
+	
 	return guard;
 }	
 
@@ -1034,7 +1041,7 @@ static void point_free(point_t *point, bool dec_succ) {
 	free(point);
 	
 #   ifndef NDEBUG
-	atomic_sub(&live_points, 1);
+	atomic_sub(&live_objects, 1);
 #   endif
 }
 
@@ -1067,6 +1074,9 @@ void guard_release(guard_t *guard) {
 	if(count == 0) {
 		point_release(guard->last_lock);
 		free(guard);
+#       ifndef NDEBUG
+		atomic_sub(&live_objects, 1);
+#       endif
 	}
 }
 

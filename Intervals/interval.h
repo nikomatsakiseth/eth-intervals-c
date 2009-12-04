@@ -12,6 +12,26 @@
 
 #include <stdbool.h>
 
+/**
+ 
+ MEMORY MANAGEMENT CONVENTIONS
+ 
+ All types in the interval library are ref counted, and each
+ type (points, guards, etc) has an appropriate 
+ retain()/release() function.
+ 
+ POINTS: Unless retained, points are freed once they occur.
+ Basically this means that you should retain/release points 
+ when you put them into a data structure unless you know
+ that the data structure will only be used before the point
+ occurs.
+ 
+ GUARDS: When created, guards have a ref count of 1.  You
+ are responsible for releasing this initial reference at
+ some point.
+ 
+ **/
+
 #define INTERVAL_SAFETY_CHECKS_ENABLED
 
 #pragma mark Type Definitions
@@ -213,8 +233,8 @@ bool point_bounded_by(point_t *point, point_t *bound);
 #pragma mark Creating Guards
 
 /// Creates and returns a new guard object.  The guard object
-/// has an initial reference count of 1 and must eventually
-/// be freed with \c guard_release().
+/// will be freed when the current interval ends unless you 
+/// retain it.
 guard_t *guard();
 
 #pragma mark Memory Management
